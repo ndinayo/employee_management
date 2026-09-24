@@ -1,0 +1,129 @@
+.dashboard-workspace .section-heading h2 { font-size: clamp(30px, 3.5vw, 46px); }
+.dashboard-workspace .section-heading { align-items: center; }
+.dashboard-workspace .section-heading .button { flex-shrink: 0; }
+.dashboard-workspace .section-heading p { max-width: 650px; line-height: 1.6; }
+.dashboard-sidebar .sidebar-label { margin-top: 30px; }
+.dashboard-sidebar .sidebar-bottom { margin-top: auto; }
+select, textarea { width: 100%; min-height: 43px; padding: 10px 12px; border: 1px solid #d5d2c9; border-radius: 5px; background: white; color: var(--ink); font: inherit; }
+textarea { resize: vertical; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+.muted { color: #67655e; font-size: 13px; line-height: 1.6; }
+.record-form, .records-panel, .report-card { padding: 24px; }
+.record-form { margin-bottom: 24px; scroll-margin-top: 24px; }
+.record-form h3, .report-card h3 { margin: 0; color: var(--burgundy); font-size: 20px; }
+.record-form fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.record-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 22px; max-width: 950px; }
+.field-wide { grid-column: 1 / -1; }
+.checkbox-field { display: flex; align-items: center; gap: 12px; padding-top: 24px; }
+.checkbox-field label { margin: 0; }
+.checkbox-field input { width: 20px; min-height: 20px; accent-color: var(--burgundy); }
+.records-toolbar, .records-filters { display: flex; align-items: center; gap: 12px; }
+.records-toolbar { justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; }
+.records-filters { flex-wrap: wrap; }
+.records-filters input { max-width: 250px; }
+.records-filters select { width: auto; }
+.record-count { color: var(--olive); font-weight: 700; }
+.row-actions { flex-wrap: wrap; min-width: 90px; gap: 12px 8px; }
+.row-actions button { padding: 3px; text-align: left; }
+.status-badge { display: inline-block; padding: 5px 9px; border-radius: 20px; background: #e8e5de; font-size: 11px; white-space: nowrap; }
+.status-active, .status-approved, .status-present, .status-paid { background: #d8edda; color: #245b32; }
+.status-absent, .status-rejected, .status-ended { background: #ffe2da; color: #8b2e21; }
+.status-pending, .status-draft { background: #f5e9c8; color: #725516; }
+.status-remote { background: #dce9f7; color: #2b5079; }
+.status-leave { background: #e7e0f4; color: #4a3670; }
+.status-unrecorded { background: #e8e5de; color: #5c584f; }
+.roster-panel { padding: 24px; margin-bottom: 24px; }
+.roster-heading { display: flex; align-items: start; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
+.roster-heading p { margin: 6px 0 0; }
+.roster-day { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.roster-day .button { padding: 9px 13px; font-size: 12px; }
+.roster-day input { width: auto; min-width: 150px; }
+.roster-counts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.name-cell { display: flex; align-items: center; gap: 11px; }
+.avatar { flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%; object-fit: cover; background: var(--mint); }
+.avatar-initials { display: grid; place-items: center; background: var(--burgundy); color: var(--cream); font-size: 12px; font-weight: 800; letter-spacing: .5px; }
+.field-section { margin-top: 8px; padding-top: 18px; border-top: 1px solid #e5e1d8; }
+.field-section h4 { margin: 0 0 14px; color: var(--burgundy); font-size: 16px; }
+.photo-hint { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.photo-hint p { margin: 0; }
+.photo-hint .avatar { width: 52px; height: 52px; }
+.quick-links { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+.quick-links a { padding: 12px 16px; border-radius: 8px; background: var(--burgundy); color: var(--cream); text-decoration: none; font-size: 13px; font-weight: 700; }
+.report-controls { display: flex; flex-wrap: wrap; gap: 22px; padding: 0 22px 20px; margin-bottom: 22px; }
+.report-controls > div { min-width: 200px; }
+.manager-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.manager-summary .summary-card { min-width: 0; }
+.manager-summary .summary-card span { font-size: 13px; }
+.report-context { color: #5b625b; line-height: 1.6; font-size: 13px; margin: 24px 0; }
+.report-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 20px; }
+.report-card .list-heading { align-items: start; gap: 12px; margin-bottom: 14px; }
+.report-card .text-button { flex-shrink: 0; }
+.report-card .empty-state { padding: 16px 0; line-height: 1.6; }
+.payroll-report { margin-top: 20px; }
+.payroll-preview { margin-top: 20px; padding: 18px; border-radius: 8px; background: var(--mint); }
+.payroll-preview p { margin-bottom: 0; font-size: 13px; line-height: 1.6; }
+.payslip-dialog { width: min(700px, calc(100% - 32px)); max-height: 90vh; padding: 28px; border: 0; border-radius: 13px; color: var(--ink); }
+.payslip-dialog::backdrop { background: #251b24b3; }
+.viewer-dialog { width: min(1000px, calc(100% - 32px)); height: min(88vh, 900px); padding: 22px; border: 0; border-radius: 13px; color: var(--ink); }
+.viewer-dialog[open] { display: flex; flex-direction: column; overflow: hidden; }
+.viewer-dialog::backdrop { background: #251b24b3; }
+.viewer-bar { display: flex; align-items: start; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
+.viewer-bar h3 { margin: 0; color: var(--burgundy); font-size: 20px; }
+.viewer-bar p { margin: 6px 0 0; }
+.viewer-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.viewer-actions .button { padding: 10px 15px; font-size: 12px; text-decoration: none; }
+.pdf-toolbar, .pdf-pagination, .pdf-zoom { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pdf-toolbar { justify-content: space-between; padding: 12px 0; border-top: 1px solid #ddd8cd; }
+.pdf-toolbar .button { min-height: 36px; padding: 8px 12px; font-size: 12px; }
+.pdf-toolbar span { font-size: 13px; white-space: nowrap; }
+.pdf-viewport { flex: 1; min-height: 0; overflow: auto; padding: 16px; border: 1px solid #ddd8cd; border-radius: 8px; background: #e7e5df; scrollbar-gutter: stable; }
+.pdf-page { display: flex; justify-content: center; width: max-content; min-width: 100%; }
+.pdf-page[hidden] { display: none; }
+.pdf-page canvas { display: block; background: white; box-shadow: 0 2px 10px #0002; }
+.pdf-loading { padding: 20px; text-align: center; }
+.pdf-page-text { margin: 16px auto 0; max-width: 80ch; padding: 12px; background: white; border-radius: 6px; }
+.pdf-page-text summary { cursor: pointer; font-weight: 700; }
+.pdf-page-text p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.pdf-password { max-width: 400px; }
+.pdf-password .button { margin-top: 16px; }
+.payslip-actions { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 32px; }
+.payslip-person { padding: 20px 0; border-bottom: 1px solid #ddd; }
+.payslip-person p { margin: 8px 0; }
+.pay-breakdown { margin: 20px 0; }
+.pay-breakdown > div { display: flex; justify-content: space-between; gap: 16px; padding: 13px 0; }
+.pay-breakdown dd { margin: 0; font-weight: 700; }
+.pay-breakdown .net-pay { border-top: 2px solid var(--burgundy); font-size: 22px; color: var(--burgundy); }
+.preserve-lines { white-space: pre-wrap; }
+@media (max-width: 1150px) { .report-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) {
+  .dashboard-sidebar { position: static; }
+  .dashboard-sidebar .sidebar-nav { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .dashboard-sidebar .sidebar-link { white-space: nowrap; }
+  .manager-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .record-form { scroll-margin-top: 16px; }
+}
+@media (max-width: 600px) {
+  .record-fields { grid-template-columns: 1fr; }
+  .records-panel, .report-card, .record-form, .roster-panel { padding: 18px; }
+  .roster-day, .roster-day input { width: 100%; }
+  .records-filters, .records-filters input { width: 100%; max-width: none; }
+  .report-controls > div { width: 100%; }
+  .payslip-dialog { padding: 18px; }
+  .viewer-dialog { padding: 14px; height: 94dvh; width: calc(100% - 16px); max-height: 94dvh; }
+  .viewer-bar { gap: 10px; margin-bottom: 8px; }
+  .viewer-bar > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .viewer-bar p { font-size: 12px; }
+  .pdf-pagination { gap: 6px; }
+  .pdf-toolbar .button { padding: 8px; }
+  .pdf-viewport { padding: 8px; }
+}
+@media print {
+  body:has(.payslip-dialog[open]) .dashboard-workspace > :not(.payslip-dialog) { display: none; }
+  body:has(.payslip-dialog[open]) .payslip-dialog { position: absolute; inset: 0; width: 100%; max-width: none; max-height: none; height: auto; overflow: visible; margin: 0; padding: 16px; border: 0; box-shadow: none; }
+  body:has(.payslip-dialog[open]) .no-print { display: none; }
+  body:has(.payslip-dialog[open]) .dashboard-sidebar { display: none; }
+  body:has(.payslip-dialog[open]) .dashboard-main { margin: 0; }
+  body:has(.payslip-dialog[open]) .dashboard-workspace { padding: 0; min-height: 0; }
+  body:has(.payslip-dialog[open]) .payslip-dialog::backdrop { background: white; }
+  @page { margin: 15mm; }
+}
