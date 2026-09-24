@@ -1,6 +1,25 @@
 from django.contrib import admin
 
-from .models import Employee, Contract, Attendance, LeaveRequest, Holiday, Salary, Payroll
+from .models import AccountProfile, Business, Employee, Contract, Attendance, LeaveRequest, Holiday, Salary, Payroll
+
+
+@admin.register(Business)
+class BusinessAdmin(admin.ModelAdmin):
+    list_display = ("name", "created_at")
+    search_fields = ("name",)
+
+
+@admin.register(AccountProfile)
+class AccountProfileAdmin(admin.ModelAdmin):
+    list_display = ("user", "role", "business")
+    list_filter = ("role",)
+    readonly_fields = ("user", "role", "business")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Employee)
@@ -12,9 +31,10 @@ class EmployeeAdmin(admin.ModelAdmin):
         "department",
         "job_title",
         "date_joined",
+        "business",
     )
     search_fields = ("first_name", "last_name", "email")
-    list_filter = ("department", "is_active", "employment_type")
+    list_filter = ("business", "department", "is_active", "employment_type")
 
 
 @admin.register(Contract)
@@ -37,7 +57,7 @@ class LeaveAdmin(admin.ModelAdmin):
 
 @admin.register(Holiday)
 class HolidayAdmin(admin.ModelAdmin):
-    list_display = ("name", "date")
+    list_display = ("name", "date", "business")
 
 
 @admin.register(Salary)

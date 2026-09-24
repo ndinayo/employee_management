@@ -2,6 +2,7 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
+from django.conf import settings
 from django.core.validators import FileExtensionValidator, MinValueValidator, MaxValueValidator
 from django.db import models
 from django.db.models.signals import pre_save
@@ -21,10 +22,32 @@ def money_field(**kwargs):
                                validators=[MinValueValidator(Decimal('0'))], **kwargs)
 
 
+class Business(models.Model):
+    name = models.CharField(max_length=200)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+
+class AccountProfile(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="account_profile")
+    role = models.CharField(max_length=10, choices=[("employee", "Employee"), ("employer", "Employer")])
+    business = models.OneToOneField(Business, on_delete=models.PROTECT, null=True, blank=True, related_name="owner_profile")
+
+    class Meta:
+        constraints = [models.CheckConstraint(
+            condition=(models.Q(role="employee", business__isnull=True) | models.Q(role="employer", business__isnull=False)),
+            name="account_role_matches_business",
+        )]
+
+
 class Employee(models.Model):
+    # Existing records remain in the original managers' workspace (business=NULL).
+    business = models.ForeignKey(Business, on_delete=models.PROTECT, null=True, blank=True)
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
-    email = models.EmailField(unique=True)
+    email = models.EmailField()
     department = models.CharField(max_length=100)
     job_title = models.CharField(max_length=100)
     date_joined = models.DateField()
@@ -43,6 +66,12 @@ class Employee(models.Model):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["business", "email"], name="unique_business_employee_email"),
+            models.UniqueConstraint(fields=["email"], condition=models.Q(business__isnull=True), name="unique_legacy_employee_email"),
+        ]
 
 
 class Contract(models.Model):
@@ -85,9 +114,16 @@ class LeaveRequest(models.Model):
 
 
 class Holiday(models.Model):
+    business = models.ForeignKey(Business, on_delete=models.PROTECT, null=True, blank=True)
     name = models.CharField(max_length=200)
-    date = models.DateField(unique=True)
+    date = models.DateField()
     notes = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["business", "date"], name="unique_business_holiday_date"),
+            models.UniqueConstraint(fields=["date"], condition=models.Q(business__isnull=True), name="unique_legacy_holiday_date"),
+        ]
 
 
 class Salary(models.Model):

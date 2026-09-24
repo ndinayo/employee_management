@@ -16,15 +16,22 @@ async function request(path, { method = "GET", token, body, download = false } =
   }
 
   let response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
 
   try {
     response = await fetch(`${API_URL}${path}`, {
       method,
       headers,
       body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
+      signal: controller.signal,
     });
-  } catch {
-    throw new Error("Cannot reach Django. Check that the backend server is running.");
+  } catch (error) {
+    throw new Error(error.name === "AbortError"
+      ? "The server is taking too long to respond. Please try again shortly."
+      : "Cannot reach the server. Please check your connection and try again.", { cause: error });
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (response.ok && download) return response.blob();
@@ -106,6 +113,14 @@ export function fetchReports(token, date, days) {
 
 export function downloadContract(token, id) {
   return request(`/api/contracts/${id}/document/`, { token, download: true });
+}
+
+export function signupUser(account) {
+  return request("/api/signup/", { method: "POST", body: account });
+}
+
+export function fetchAccount(token) {
+  return request("/api/account/", { token });
 }
 
 export function fetchContractPreview(token, id) {

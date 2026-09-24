@@ -13,13 +13,24 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Employee, Contract, Attendance, LeaveRequest, Holiday, Salary, Payroll
-from .permissions import IsManager
+from .permissions import IsManager, business_id_for
 from .serializers import (EmployeeSerializer, ContractSerializer, AttendanceSerializer,
                           LeaveSerializer, HolidaySerializer, SalarySerializer, PayrollSerializer)
 
 
 class ManagerViewSet(viewsets.ModelViewSet):
     permission_classes = [IsManager]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        field = "business_id" if queryset.model in (Employee, Holiday) else "employee__business_id"
+        return queryset.filter(**{field: business_id_for(self.request.user)})
+
+    def perform_create(self, serializer):
+        if serializer.Meta.model in (Employee, Holiday):
+            serializer.save(business_id=business_id_for(self.request.user))
+        else:
+            serializer.save()
 
     def perform_destroy(self, instance):
         try:
@@ -115,7 +126,7 @@ class SalaryViewSet(ManagerViewSet):
             raise serializers.ValidationError(
                 {"detail": f"{salary.employee} already has a payroll record covering {month}. Open Payroll & payslips to review it."}
             )
-        payroll = PayrollSerializer(data={
+        payroll = PayrollSerializer(context=self.get_serializer_context(), data={
             "employee": salary.employee_id,
             "period_start": period_start, "period_end": period_end,
             "base_salary": salary.monthly_amount, "allowances": "0", "deductions": "0",
@@ -152,22 +163,24 @@ class ManagerReportsView(APIView):
         date, days = query.validated_data["date"], query.validated_data["days"]
         until = date + timedelta(days=days)
         month_start = date.replace(day=1)
-        employees = Employee.objects.filter(is_active=True, date_joined__lte=date).order_by("last_name", "first_name")
+        business_id = business_id_for(request.user)
+        business_employees = Employee.objects.filter(business_id=business_id)
+        employees = business_employees.filter(is_active=True, date_joined__lte=date).order_by("last_name", "first_name")
         attendance = Attendance.objects.filter(date=date, employee__in=employees).select_related("employee")
         on_leave = LeaveRequest.objects.filter(status="approved", start_date__lte=date, end_date__gte=date,
                                                employee__in=employees).select_related("employee")
         recorded_ids = set(attendance.values_list("employee_id", flat=True))
         leave_ids = set(on_leave.values_list("employee_id", flat=True))
-        holidays = Holiday.objects.filter(date=date)
+        holidays = Holiday.objects.filter(date=date, business_id=business_id)
         working_day = date.weekday() < 5 and not holidays.exists()
         unrecorded = employees.exclude(id__in=recorded_ids | leave_ids) if working_day else employees.none()
-        contracts = Contract.objects.filter(status="active", employee__is_active=True, end_date__range=(date, until)).select_related("employee").order_by("end_date")
-        expired = Contract.objects.filter(status="active", employee__is_active=True, end_date__lt=date).select_related("employee").order_by("end_date")
-        hours = Attendance.objects.filter(date__range=(month_start, date)).values(
+        contracts = Contract.objects.filter(employee__in=business_employees, status="active", employee__is_active=True, end_date__range=(date, until)).select_related("employee").order_by("end_date")
+        expired = Contract.objects.filter(employee__in=business_employees, status="active", employee__is_active=True, end_date__lt=date).select_related("employee").order_by("end_date")
+        hours = Attendance.objects.filter(employee__in=business_employees, date__range=(month_start, date)).values(
             "employee_id", "employee__first_name", "employee__last_name"
         ).annotate(hours=Sum("hours_worked")).order_by("employee__last_name")
         totals = {}
-        for item in Payroll.objects.filter(period_end__range=(month_start, date)):
+        for item in Payroll.objects.filter(employee__in=business_employees, period_end__range=(month_start, date)):
             total = totals.setdefault(item.currency, {"currency": item.currency, "gross": Decimal("0"),
                 "deductions": Decimal("0"), "net": Decimal("0"), "paid": Decimal("0"), "draft": Decimal("0")})
             total["gross"] += item.gross_pay
@@ -179,7 +192,7 @@ class ManagerReportsView(APIView):
             "working_day": working_day, "active_employees": employees.count(),
             "departments": employees.values("department").distinct().count(),
             "present_count": attendance.filter(status__in=["present", "remote"]).count(),
-            "pending_leave_count": LeaveRequest.objects.filter(status="pending").count(),
+            "pending_leave_count": LeaveRequest.objects.filter(employee__in=business_employees, status="pending").count(),
             "absent": AttendanceSerializer(attendance.filter(status="absent"), many=True).data,
             "on_leave": LeaveSerializer(on_leave, many=True).data,
             "unrecorded": EmployeeSerializer(unrecorded, many=True).data,

@@ -395,7 +395,7 @@ function ReportsPage({ token, onAuthError, overview = false }) {
   </>;
 }
 
-export default function ManagerDashboard({ token, onLogout, onAuthError }) {
+export default function ManagerDashboard({ token, account, onLogout, onAuthError }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -412,7 +412,7 @@ export default function ManagerDashboard({ token, onLogout, onAuthError }) {
   }
 
   return <>
-    <aside className="dashboard-sidebar" aria-label="Manager menu"><Link className="brand" to="/"><span className="brand-mark">E</span><span>Employee<span className="brand-dot">.</span></span></Link><p className="sidebar-label">MANAGER WORKSPACE</p>
+    <aside className="dashboard-sidebar" aria-label="Manager menu"><Link className="brand" to="/"><span className="brand-mark">E</span><span>Employee<span className="brand-dot">.</span></span></Link><p className="sidebar-label">{account?.business_name || "MANAGER WORKSPACE"}</p>
       <nav className="sidebar-nav" aria-label="Manager navigation">
         <NavLink end to="/dashboard" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Overview</NavLink>
         {Object.entries(modules).map(([key, config]) => <NavLink key={key} to={`/dashboard/${key}`} className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>{config.title}</NavLink>)}

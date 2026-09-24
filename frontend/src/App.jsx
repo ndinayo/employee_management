@@ -2,19 +2,22 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router";
 import heroImage from "./assets/images/hero.jpeg";
 import { ACCESS_TOKEN } from "./constants";
-import { fetchEmployees, loginUser } from "./api";
+import { fetchAccount } from "./api";
+import AuthForm from "./AuthForm";
+import AccountPage from "./AccountPage";
 import ManagerDashboard from "./ManagerDashboard";
 import "./App.css";
 import "./ManagerDashboard.css";
 
 function HomePage({
   token,
-  employeeCount,
-  credentials,
-  setCredentials,
-  onLogin,
+  account,
+  onAuthenticated,
+  onLogout,
   error,
 }) {
+  const canManage = Boolean(account?.can_manage);
+  const workspacePath = canManage ? "/dashboard" : "/account";
   return (
     <>
       <section className="hero" id="home">
@@ -35,16 +38,17 @@ function HomePage({
           <nav className="site-nav" aria-label="Main navigation">
             <Link to="/">Home</Link>
             <a href="#about">About</a>
-            {token && <Link to="/dashboard">Dashboard</Link>}
+            {token && <Link to={workspacePath}>My workspace</Link>}
+            {token && <button type="button" className="nav-signout" onClick={onLogout}>Sign out</button>}
           </nav>
 
           {token ? (
-            <Link className="header-action" to="/dashboard">
-              Open dashboard
+            <Link className="header-action" to={workspacePath}>
+              Open workspace
             </Link>
           ) : (
             <a className="header-action" href="#sign-in">
-              Staff sign in
+              Sign in / Sign up
             </a>
           )}
         </header>
@@ -61,8 +65,8 @@ function HomePage({
             Find employees, update details, and stay connected to your team.
           </p>
           {token ? (
-            <Link className="button button-coral" to="/dashboard">
-              Go to dashboard &rarr;
+            <Link className="button button-coral" to={workspacePath}>
+              Go to workspace &rarr;
             </Link>
           ) : (
             <a className="button button-coral" href="#sign-in">
@@ -78,9 +82,9 @@ function HomePage({
             <span>OP</span>
           </div>
           <div>
-            <strong>{token ? employeeCount : "One place"}</strong>
+            <strong>{account?.can_manage ? "Your business" : "One place"}</strong>
             <small>
-              {token ? "employee records" : "for your people records"}
+              for your people records
             </small>
           </div>
         </div>
@@ -106,12 +110,12 @@ function HomePage({
           </p>
         </section>
 
-        <section className="workspace" id="sign-in">
+        {(!token || canManage) && <section className="workspace" id="sign-in">
           <div className="section-heading">
             <div>
               <p className="eyebrow dark-eyebrow">YOUR WORKSPACE</p>
               <h2>Employee management</h2>
-              <p>Sign in to manage your team.</p>
+              <p>Sign in or create an employee or employer account.</p>
             </div>
           </div>
 
@@ -121,55 +125,17 @@ function HomePage({
             </p>
           )}
 
-          {token ? (
+          {canManage ? (
             <div className="panel signed-in-panel">
               <h3>You are signed in.</h3>
-              <p>Your employee records are on the dashboard.</p>
+              <p>Your workspace is ready.</p>
               <Link className="button button-coral" to="/dashboard">
-                Open dashboard &rarr;
+                Open workspace &rarr;
               </Link>
             </div>
           ) : (
             <div className="login-layout">
-              <form className="panel login-panel" onSubmit={onLogin}>
-                <p className="eyebrow dark-eyebrow">MANAGER ACCESS</p>
-                <h3>Sign in to continue</h3>
-                <p>Use your manager or administrator account.</p>
-
-                <label htmlFor="username">Username</label>
-                <input
-                  id="username"
-                  type="text"
-                  autoComplete="username"
-                  required
-                  value={credentials.username}
-                  onChange={(event) =>
-                    setCredentials((current) => ({
-                      ...current,
-                      username: event.target.value,
-                    }))
-                  }
-                />
-
-                <label htmlFor="password">Password</label>
-                <input
-                  id="password"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  value={credentials.password}
-                  onChange={(event) =>
-                    setCredentials((current) => ({
-                      ...current,
-                      password: event.target.value,
-                    }))
-                  }
-                />
-
-                <button className="button button-coral" type="submit">
-                  Sign in &rarr;
-                </button>
-              </form>
+              <AuthForm onAuthenticated={onAuthenticated} />
 
               <div className="login-aside">
                 <span className="aside-icon" aria-hidden="true">*</span>
@@ -181,7 +147,7 @@ function HomePage({
               </div>
             </div>
           )}
-        </section>
+        </section>}
       </main>
 
       <footer className="site-footer">
@@ -197,29 +163,29 @@ function HomePage({
 function App() {
   const navigate = useNavigate();
   const [token, setToken] = useState(() => localStorage.getItem(ACCESS_TOKEN));
-  const [employeeCount, setEmployeeCount] = useState(0);
+  const [account, setAccount] = useState(null);
   const [error, setError] = useState("");
-  const [credentials, setCredentials] = useState({ username: "", password: "" });
+  const [retry, setRetry] = useState(0);
 
   const handleLogout = useCallback(() => {
     localStorage.removeItem(ACCESS_TOKEN);
     setToken(null);
-    setEmployeeCount(0);
+    setAccount(null);
     setError("");
   }, []);
 
   const handleAuthError = useCallback((err) => {
     if (err.status === 401 || err.status === 403) {
       handleLogout();
-      setError("Please sign in with a manager or administrator account.");
+      setError("Your session has ended. Please sign in again.");
     }
   }, [handleLogout]);
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    fetchEmployees(token).then((records) => {
-      if (!cancelled) setEmployeeCount(records.length);
+    fetchAccount(token).then((profile) => {
+      if (!cancelled) { setAccount(profile); setError(""); }
     }).catch((err) => {
       if (!cancelled) {
         setError(err.message);
@@ -227,27 +193,25 @@ function App() {
       }
     });
     return () => { cancelled = true; };
-  }, [token, handleAuthError]);
+  }, [token, retry, handleAuthError]);
 
-  async function handleLogin(event) {
-    event.preventDefault();
+  function handleAuthenticated(access, profile) {
+    localStorage.setItem(ACCESS_TOKEN, access);
+    setAccount(profile);
+    setToken(access);
     setError("");
-    try {
-      const data = await loginUser(credentials.username, credentials.password);
-      const records = await fetchEmployees(data.access);
-      localStorage.setItem(ACCESS_TOKEN, data.access);
-      setEmployeeCount(records.length);
-      setToken(data.access);
-      setCredentials({ username: "", password: "" });
-      navigate("/dashboard");
-    } catch (err) {
-      setError(err.status === 403 ? "Manager or administrator access is required." : err.message);
-    }
+    navigate(profile.can_manage ? "/dashboard" : "/account");
   }
 
+  const pendingAccount = <main className="workspace account-workspace">
+    {error ? <><p className="message error" role="alert">{error}</p><button className="button button-coral" onClick={() => { setError(""); setRetry((value) => value + 1); }}>Retry</button><button className="button button-outline" onClick={handleLogout}>Sign out</button></>
+      : <p role="status">Loading your account…</p>}
+  </main>;
+
   return <Routes>
-    <Route path="/" element={<HomePage token={token} employeeCount={employeeCount} credentials={credentials} setCredentials={setCredentials} onLogin={handleLogin} error={error} />} />
-    <Route path="/dashboard/*" element={token ? <ManagerDashboard token={token} onLogout={handleLogout} onAuthError={handleAuthError} /> : <Navigate to="/" replace />} />
+    <Route path="/" element={<HomePage token={token} account={account} onAuthenticated={handleAuthenticated} onLogout={handleLogout} error={error} />} />
+    <Route path="/account" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : <AccountPage account={account} onLogout={handleLogout} />} />
+    <Route path="/dashboard/*" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : account.can_manage ? <ManagerDashboard token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} /> : <Navigate to="/account" replace />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>;
 }

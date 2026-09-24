@@ -1,20 +1,15 @@
-from django.contrib.auth.models import User
 from django.core.validators import FileExtensionValidator
 from django.db import transaction
 from rest_framework import serializers
 from django.utils import timezone
 
 from .models import Employee, Contract, Attendance, LeaveRequest, Holiday, Salary, Payroll
+from .permissions import business_id_for
 
 
-class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ["id", "username", "password"]
-        extra_kwargs = {"password": {"write_only": True}}
-
-    def create(self, validated_data):
-        return User.objects.create_user(**validated_data)
+def serializer_business_id(serializer):
+    request = serializer.context.get("request")
+    return business_id_for(request.user) if request else None
 
 
 class EmployeeSerializer(serializers.ModelSerializer):
@@ -23,6 +18,14 @@ class EmployeeSerializer(serializers.ModelSerializer):
     contract_document = serializers.FileField(write_only=True, required=False)
     contract_title = serializers.CharField(write_only=True, required=False, allow_blank=True)
     latest_contract = serializers.SerializerMethodField()
+
+    def validate_email(self, value):
+        duplicate = Employee.objects.filter(business_id=serializer_business_id(self), email__iexact=value)
+        if self.instance:
+            duplicate = duplicate.exclude(pk=self.instance.pk)
+        if duplicate.exists():
+            raise serializers.ValidationError("An employee with this email already exists in your business.")
+        return value
 
     def get_photo_name(self, obj):
         return obj.photo.name.rsplit("/", 1)[-1] if obj.photo else ""
@@ -56,7 +59,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         Validation and storage stay in ContractSerializer so the rules cannot
         drift from contracts created on the Contracts page.
         """
-        contract = ContractSerializer(data={
+        contract = ContractSerializer(context=self.context, data={
             "employee": employee.pk, "title": title or "Employment contract",
             "start_date": employee.date_joined, "status": "active", "document": document,
         })
@@ -101,10 +104,17 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]
+        validators = []
 
 
 class ManagerRecordSerializer(serializers.ModelSerializer):
     employee_name = serializers.CharField(source="employee.__str__", read_only=True)
+
+    def get_fields(self):
+        fields = super().get_fields()
+        if "employee" in fields:
+            fields["employee"].queryset = Employee.objects.filter(business_id=serializer_business_id(self))
+        return fields
 
     def value(self, attrs, field, default=None):
         return attrs.get(field, getattr(self.instance, field, default))
@@ -186,9 +196,18 @@ class LeaveSerializer(ManagerRecordSerializer):
 
 
 class HolidaySerializer(serializers.ModelSerializer):
+    def validate_date(self, value):
+        duplicate = Holiday.objects.filter(business_id=serializer_business_id(self), date=value)
+        if self.instance:
+            duplicate = duplicate.exclude(pk=self.instance.pk)
+        if duplicate.exists():
+            raise serializers.ValidationError("A holiday already exists on this date in your business.")
+        return value
+
     class Meta:
         model = Holiday
-        fields = "__all__"
+        fields = ["id", "name", "date", "notes"]
+        validators = []
 
 
 class SalarySerializer(ManagerRecordSerializer):

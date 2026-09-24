@@ -252,12 +252,15 @@ The `predev` and `prebuild` scripts copy PDF.js fonts, character maps, and image
 
 ## Accounts and access
 
-- Active Django superusers and users with `is_staff=True` can use the manager API and dashboard.
-- Other active users need membership in the **Managers** group. In Django admin, create or edit a user, add this group, and save.
-- A Managers-group user does not need staff status for the React dashboard; staff status is needed to enter Django admin.
-- Ordinary authenticated users cannot access employee records, salaries, reports, profile photos, or contract files.
-- Employee profiles and Django login accounts are separate records. Adding an employee does not create a login.
-- There is no public registration or password-reset API. Administrators manage accounts through Django admin.
+- Choose **Create account** next to Sign in. Enter a username, email address, password and confirmation, then choose **Employee** or **Employer**. Successful signup signs the user in automatically.
+- **Employers** must enter a business name. Each signup creates a separate business workspace. These accounts can manage only that business's employees, contracts, attendance, leave, holidays, salaries, payroll and reports. Public signup never grants Django staff or superuser privileges.
+- **Employees** can sign in and view their own account page at `/account`. They cannot use the employer API or dashboard. Signup does not link an employee login to an employment record; invitations, company membership and employee self-service are not implemented.
+- Existing administrators/staff and users in the **Managers** group retain access to the original workspace. Existing employee and holiday records keep `business=NULL`; new public employer accounts cannot see them. Signup does not transfer or claim existing records, even when names or emails match.
+- A Managers-group user does not need staff status for the React dashboard; staff status is needed for Django admin. Django admin remains a privileged administration interface.
+- Employee records and login accounts are separate: adding an employee in the dashboard does not create a login.
+- Usernames are unique and are used to sign in. Passwords are hashed and checked against Django's password validators. There is no password-reset API.
+
+For the existing Render/Vercel deployment, see [signup rollout instructions](docs/DEPLOYMENT.md).
 
 The frontend stores the JWT access token in browser local storage. Access tokens last **30 minutes**; refresh tokens last **one day**. The API provides token refresh, but the current frontend does not automatically use it: an expired session requires signing in again. Signing out removes the browser's stored access token; there is no server-side token revocation endpoint.
 
@@ -280,6 +283,8 @@ The frontend stores the JWT access token in browser local storage. Access tokens
 | --- | --- | --- | --- |
 | POST | `/api/token/` | `username`, `password` | `200` with `access` and `refresh` |
 | POST | `/api/token/refresh/` | `refresh` | `200` with a new `access` token |
+| POST | `/api/signup/` | `username`, `email`, `password`, `password_confirm`, `role`; `business_name` required for `employer` | `201` with `access`, `refresh`, `user` |
+| GET | `/api/account/` | Bearer access token | `200` with `id`, `username`, `email`, `role`, `business_name`, `can_manage` |
 
 Example login body:
 
@@ -290,7 +295,9 @@ Example login body:
 }
 ```
 
-Both token endpoints are available without an access token. Token issuance checks credentials; access to business endpoints additionally checks the manager role. Django's `/api-auth/` URLs are present, but the business API uses JWT authentication, not an admin browser session.
+Signup and both token endpoints are available without an access token. Signup accepts only `employee` or `employer` roles, requires matching passwords, and limits requests by IP using DRF's anonymous throttle (20/hour with the configured cache). Business names must be nonblank for employers and empty/omitted for employees. Duplicate usernames and invalid fields return `400`; throttled requests return `429`.
+
+Token issuance checks credentials; business endpoints additionally require employer/manager access and scope all reads, writes, files and reports to the account's workspace. Django's `/api-auth/` URLs are present, but the business API uses JWT authentication, not an admin browser session.
 
 ### Standard CRUD operations
 
@@ -322,7 +329,7 @@ Additional returned fields include `employee_name` for employee-linked records; 
 | Field or workflow | Accepted values / rule |
 | --- | --- |
 | Employee `employment_type` | `full_time`, `part_time`, `contract`, `intern` |
-| Employee `email` | Valid email, unique across employee profiles |
+| Employee `email` | Valid email, unique within the business workspace |
 | Contract `status` | `draft`, `active`, `ended` |
 | Attendance `status` | `present`, `remote`, `absent` |
 | Attendance hours | Decimal from 0 to 24; absent records require zero hours; one record per employee/date |
@@ -485,7 +492,7 @@ From the project root:
 .\env\Scripts\python.exe .\backend\manage.py test api --settings=backend.test_settings --noinput
 ```
 
-The checked-in API suite currently contains **34 tests**, covering manager access, profiles/uploads, private file delivery, attendance/leave validation, payroll, and reports. Test settings use an isolated in-memory SQLite database and a fast test-only password hasher. They still import the base settings, so the five database variables must be present in `backend/.env`, although PostgreSQL need not be running for this test command. Do not run the application with `backend.test_settings`.
+The checked-in API suite currently contains **51 tests**, covering signup/login, account roles, business isolation, CORS, profiles/uploads, private files, attendance/leave validation, payroll, and reports. Test settings use an isolated in-memory SQLite database and a fast test-only password hasher. They still import base settings, so provide `SECRET_KEY` when `DEBUG=false` and either `DATABASE_URL` or the five `DB_*` variables. PostgreSQL need not be running for this test command. Do not run the application with `backend.test_settings`.
 
 Running tests without `--settings=backend.test_settings` uses PostgreSQL and requires a role allowed to create a test database. The normal application role does not require that privilege.
 
@@ -509,7 +516,7 @@ For a manual end-to-end check: sign in, create/edit a demonstration employee, up
 
 ### Employment and attendance
 
-- All authorized managers share the same company records. There is no organization/tenant isolation or department-specific manager scope.
+- Public employer accounts have separate business workspaces. Existing administrators and Managers-group accounts share the original workspace. There is no department-specific manager scope or public joining/claiming of existing businesses.
 - Employee status is the current `is_active` flag; historical reports also use that current status, rather than reconstructing a past employment state.
 - Expected working days are Monday to Friday, excluding manually entered company holidays. Missing attendance is shown separately from confirmed absence. Individual shift schedules and holiday imports are not implemented.
 - Working hours are entered manually. The frontend starts a present-day entry at eight hours; the API's default is zero. There is no automatic clock-in/out, overtime calculation, or attendance-to-payroll calculation.
@@ -554,6 +561,6 @@ For a manual end-to-end check: sign in, create/edit a demonstration employee, up
 
 ## Deployment considerations
 
-The checked-in Django settings are for local development: `DEBUG=True`, a development secret key, wildcard allowed hosts, and permissive CORS. Before public deployment, configure a private secret, disable debug output, restrict hosts/origins, serve over HTTPS, and use a production WSGI/ASGI server with appropriate static-file handling. These settings are currently constants in `settings.py`; adding similarly named `.env` variables alone will not change them.
+Django reads production settings from environment variables, including `SECRET_KEY`, `DEBUG`, `DATABASE_URL`, `ALLOWED_HOSTS`, `FRONTEND_URL`, and `CORS_ALLOWED_ORIGINS`. Render defaults to `DEBUG=false` and automatically contributes its hostname to allowed hosts. Set `FRONTEND_URL` to the exact frontend origin (no path or `#sign-in`); this adds it to CORS and trusted CSRF origins. Additional frontend origins can be listed in `CORS_ALLOWED_ORIGINS`, separated by commas. See [deployment instructions](docs/DEPLOYMENT.md) for the current services and signup migration.
 
 Build the frontend with the intended `VITE_API_URL`. Its host must serve `index.html` for client-side routes such as `/dashboard/employees`. Preserve the built PDF assets, keep the private uploads directory persistent and non-public, and plan backups of PostgreSQL and uploaded files. Django's `runserver` and Vite's development/preview servers are local development tools.
