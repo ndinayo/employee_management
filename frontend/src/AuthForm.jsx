@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import { fetchAccount, loginUser, signupUser } from "./api";
 
 const emptyFields = { username: "", email: "", password: "", password_confirm: "", role: "", business_name: "" };
 
-export default function AuthForm({ onAuthenticated }) {
-  const [signup, setSignup] = useState(false);
+export default function AuthForm({ onAuthenticated, initialMode = "signin" }) {
+  const [signup, setSignup] = useState(initialMode === "signup");
   const [fields, setFields] = useState(emptyFields);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -37,7 +38,7 @@ export default function AuthForm({ onAuthenticated }) {
       onAuthenticated(result.access, account);
     } catch (err) {
       setError(!signup && err.status === 401
-        ? "Username or password is incorrect. If you are new here, choose Create account."
+        ? "Those sign-in details are incorrect. Check your invitation email, or choose Create account if you are new here."
         : err.message);
     } finally {
       setBusy(false);
@@ -70,10 +71,12 @@ export default function AuthForm({ onAuthenticated }) {
         <label htmlFor="signup-email">Email address</label>
         <input id="signup-email" name="email" type="email" value={fields.email} onChange={update} autoComplete="email" maxLength={254} required />
       </>}
-      <label htmlFor="username">Username</label>
-      <input id="username" name="username" value={fields.username} onChange={update} autoComplete="username" maxLength={150} required />
+      <label htmlFor="username">{signup ? "Username" : "Username or email"}</label>
+      <input id="username" name="username" value={fields.username} onChange={update} autoComplete="username" maxLength={254} required />
+      {!signup && <p className="auth-hint">Added to a team by your employer? Sign in with the email and temporary password they sent you — there is no need to create an account.</p>}
       <label htmlFor="password">Password</label>
       <input id="password" name="password" type="password" value={fields.password} onChange={update} autoComplete={signup ? "new-password" : "current-password"} maxLength={128} minLength={signup ? 8 : undefined} aria-describedby={signup ? "password-hint" : undefined} required />
+      {!signup && <Link className="forgot-password-link" to="/forgot-password">Forgot password?</Link>}
       {signup && <>
         <p id="password-hint" className="auth-hint">Use at least 8 characters. Avoid common passwords, only numbers, or your personal details.</p>
         <label htmlFor="password-confirm">Confirm password</label>

@@ -26,7 +26,8 @@ render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
 if render_hostname:
     ALLOWED_HOSTS.append(render_hostname)
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "").rstrip("/")
+# Invitation emails link here, so local development needs a working default.
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173" if DEBUG else "").rstrip("/")
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", (
     "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"
     if DEBUG else ""
@@ -60,6 +61,9 @@ SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
 }
+
+# Password reset links are intentionally short-lived.
+PASSWORD_RESET_TIMEOUT = 60 * 60
 
 
 # Application definition
@@ -157,7 +161,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = os.getenv("TIME_ZONE", "Africa/Johannesburg")
 
 USE_I18N = True
 
@@ -204,3 +208,21 @@ elif STORAGE_BACKEND != "filesystem":
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CORS_ALLOW_ALL_ORIGINS = False
+
+# Outgoing mail. With no SMTP host configured, invitations are printed to the
+# server console instead of being sent, so local development needs no account.
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() == "true"
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "false").lower() == "true"
+EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "20"))
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@employee-management.local")
+EMAIL_BACKEND = ("django.core.mail.backends.smtp.EmailBackend" if EMAIL_HOST
+                 else "django.core.mail.backends.console.EmailBackend")
+
+# Without EMAIL_HOST the console backend "succeeds" without delivering anything,
+# so nothing may claim an invitation reached the employee.
+EMAIL_DELIVERS = bool(EMAIL_HOST)
+EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "20"))

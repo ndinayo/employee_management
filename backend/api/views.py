@@ -1,6 +1,7 @@
 from calendar import monthrange
 from datetime import timedelta
 from decimal import Decimal
+from hashlib import sha256
 
 from django.db import transaction
 from django.db.models import Sum
@@ -12,10 +13,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Employee, Contract, Attendance, LeaveRequest, Holiday, Salary, Payroll
+from . import leave_management, onboarding
+from .models import AccountProfile, Employee, Contract, Attendance, LeaveBalance, LeaveRequest, Holiday, Salary, Payroll
 from .permissions import IsManager, business_id_for
 from .serializers import (EmployeeSerializer, ContractSerializer, AttendanceSerializer,
-                          LeaveSerializer, HolidaySerializer, SalarySerializer, PayrollSerializer)
+                          LeaveBalanceSerializer, LeaveSerializer, HolidaySerializer,
+                          SalarySerializer, PayrollSerializer)
 
 
 class ManagerViewSet(viewsets.ModelViewSet):
@@ -42,8 +45,11 @@ class ManagerViewSet(viewsets.ModelViewSet):
 
 
 class EmployeeViewSet(ManagerViewSet):
-    queryset = Employee.objects.prefetch_related("contracts").order_by("last_name", "first_name", "id")
+    queryset = Employee.objects.select_related("account").prefetch_related("contracts").order_by("last_name", "first_name", "id")
     serializer_class = EmployeeSerializer
+
+    def perform_destroy(self, instance):
+        onboarding.purge_employee(instance)
 
     @action(detail=True, methods=["get"])
     def photo(self, request, pk=None):
@@ -59,9 +65,106 @@ class EmployeeViewSet(ManagerViewSet):
         return response
 
 
+class ContractMessageSerializer(serializers.Serializer):
+    message = serializers.CharField(max_length=2000, required=False, allow_blank=True, trim_whitespace=True)
+
+
 class ContractViewSet(ManagerViewSet):
     queryset = Contract.objects.select_related("employee").order_by("-start_date", "-id")
     serializer_class = ContractSerializer
+
+    def perform_destroy(self, instance):
+        if instance.signature_status != "draft":
+            raise serializers.ValidationError("A contract cannot be deleted after it has been sent for signature.")
+        super().perform_destroy(instance)
+
+    @action(detail=True, methods=["post"], url_path="send-for-signature")
+    def send_for_signature(self, request, pk=None):
+        with transaction.atomic():
+            # Lock only the contract row. PostgreSQL rejects FOR UPDATE when a
+            # select_related() join includes Employee.business, because that
+            # relationship is nullable and therefore uses an outer join.
+            contract = Contract.objects.select_for_update().get(pk=self.get_object().pk)
+            if contract.signature_status != "draft":
+                raise serializers.ValidationError("Only a draft contract can be sent for signature.")
+            if not contract.content.strip():
+                raise serializers.ValidationError({"content": "Write the digital contract before sending it."})
+            if not AccountProfile.objects.filter(employee=contract.employee, role="employee").exists():
+                raise serializers.ValidationError("This employee does not have a linked sign-in account.")
+            contract.signature_status = "sent"
+            contract.sent_at = timezone.now()
+            contract.content_hash = sha256(contract.content.encode("utf-8")).hexdigest()
+            contract.save(update_fields=["signature_status", "sent_at", "content_hash"])
+        emailed = onboarding.send_contract_notification(contract)
+        if emailed:
+            contract.notification_sent_at = timezone.now()
+            contract.save(update_fields=["notification_sent_at"])
+        data = self.get_serializer(contract).data
+        data["notification"] = {
+            "email_sent": emailed,
+            "detail": (f"Contract sent to {contract.employee.email}." if emailed else
+                       "Contract is ready in the employee dashboard, but the notification email could not be sent."),
+        }
+        return Response(data)
+
+    @action(detail=True, methods=["post"], url_path="resend-signature-email")
+    def resend_signature_email(self, request, pk=None):
+        contract = self.get_object()
+        if contract.signature_status != "sent":
+            raise serializers.ValidationError("Only a contract awaiting signature can be emailed again.")
+        serializer = ContractMessageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        message = serializer.validated_data.get("message", "")
+        contract.employer_message = message
+        contract.save(update_fields=["employer_message"])
+        emailed = onboarding.send_contract_notification(contract, message)
+        if not emailed:
+            return Response({
+                "detail": "The contract is still available in the employee dashboard, but the email could not be sent. Check the shared email settings and try again."
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        contract.notification_sent_at = timezone.now()
+        contract.save(update_fields=["notification_sent_at"])
+        return Response({"email_sent": True, "detail": f"Signature email sent again to {contract.employee.email}."})
+
+    @action(detail=True, methods=["post"], url_path="request-new-signature")
+    def request_new_signature(self, request, pk=None):
+        serializer = ContractMessageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        message = serializer.validated_data.get("message", "")
+        with transaction.atomic():
+            original = Contract.objects.select_for_update().get(pk=self.get_object().pk)
+            if original.signature_status != "signed":
+                raise serializers.ValidationError("A new signature can only be requested for a signed contract.")
+            if original.revisions.filter(signature_status="sent").exists():
+                raise serializers.ValidationError(
+                    "A corrected signature is already awaiting this employee. Resend that request instead."
+                )
+            replacement = Contract.objects.create(
+                employee=original.employee,
+                revision_of=original,
+                employer_message=message,
+                title=original.title,
+                start_date=original.start_date,
+                end_date=original.end_date,
+                status=original.status,
+                terms=original.terms,
+                content=original.content,
+                document=original.document.name if original.document else "",
+                signature_status="sent",
+                sent_at=timezone.now(),
+                content_hash=sha256(original.content.encode("utf-8")).hexdigest(),
+            )
+        emailed = onboarding.send_contract_notification(replacement, message)
+        if emailed:
+            replacement.notification_sent_at = timezone.now()
+            replacement.save(update_fields=["notification_sent_at"])
+        data = self.get_serializer(replacement).data
+        data["notification"] = {
+            "email_sent": emailed,
+            "detail": (f"A new signature was requested from {replacement.employee.email}." if emailed else
+                       "The new signing request is in the employee dashboard, but its email could not be sent."),
+        }
+        return Response(data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["get"])
     def document(self, request, pk=None):
@@ -98,6 +201,19 @@ class AttendanceViewSet(ManagerViewSet):
 class LeaveViewSet(ManagerViewSet):
     queryset = LeaveRequest.objects.select_related("employee").order_by("-start_date", "-id")
     serializer_class = LeaveSerializer
+
+
+class LeaveBalanceViewSet(ManagerViewSet):
+    queryset = LeaveBalance.objects.select_related("employee").order_by(
+        "-year", "employee__last_name", "employee__first_name", "leave_type")
+    serializer_class = LeaveBalanceSerializer
+
+    def get_queryset(self):
+        business_id = business_id_for(self.request.user)
+        year = timezone.localdate().year
+        for employee in Employee.objects.filter(business_id=business_id):
+            leave_management.ensure_leave_balances(employee, year)
+        return super().get_queryset()
 
 
 class HolidayViewSet(ManagerViewSet):

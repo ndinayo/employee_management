@@ -1,9 +1,12 @@
 from django.core.validators import FileExtensionValidator
 from django.db import transaction
+from django.utils.html import strip_tags
 from rest_framework import serializers
 from django.utils import timezone
 
-from .models import Employee, Contract, Attendance, LeaveRequest, Holiday, Salary, Payroll
+from . import leave_management, onboarding
+from .contract_content import sanitize_contract_html
+from .models import Employee, Contract, Attendance, LeaveBalance, LeaveRequest, Holiday, Salary, Payroll
 from .permissions import business_id_for
 
 
@@ -18,6 +21,23 @@ class EmployeeSerializer(serializers.ModelSerializer):
     contract_document = serializers.FileField(write_only=True, required=False)
     contract_title = serializers.CharField(write_only=True, required=False, allow_blank=True)
     latest_contract = serializers.SerializerMethodField()
+    # Only names, job title and email are asked of the employer. The employee
+    # fills in the rest from their own workspace.
+    email = serializers.EmailField(max_length=254)
+    department = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    date_joined = serializers.DateField(required=False, default=timezone.localdate)
+    account_status = serializers.SerializerMethodField()
+    invite = serializers.SerializerMethodField()
+
+    def get_account_status(self, obj):
+        account = getattr(obj, "account", None)
+        if not account:
+            return "none"
+        return "pending_first_sign_in" if account.must_change_password else "active"
+
+    def get_invite(self, obj):
+        # Only ever populated on the response to the request that hired them.
+        return getattr(obj, "_invite", None)
 
     def validate_email(self, value):
         duplicate = Employee.objects.filter(business_id=serializer_business_id(self), email__iexact=value)
@@ -76,7 +96,32 @@ class EmployeeSerializer(serializers.ModelSerializer):
             if document:
                 self.attach_contract(employee, document, title)
                 employee = Employee.objects.prefetch_related("contracts").get(pk=employee.pk)
+            employee._invite = self.open_account(employee)
         return employee
+
+    def open_account(self, employee):
+        """Create the employee's sign-in account and email their password.
+
+        A failed send still leaves a usable account, so the employer is told
+        what happened and can pass the password on themselves.
+        """
+        if onboarding.email_is_taken(employee.email) and not onboarding.reclaim_email(employee.email, employee):
+            return {"created": False, "email_sent": False,
+                    "detail": "An account already uses this email address, so no new sign-in was created."}
+        user, password = onboarding.provision_account(employee)
+        sent = onboarding.send_invite(employee, user, password)
+        if sent:
+            detail = f"Sign-in details were emailed to {employee.email}."
+        elif onboarding.can_deliver(employee.business):
+            detail = f"The account was created but the email to {employee.email} could not be sent."
+        else:
+            detail = ("Email sending is not set up, so no message was sent. "
+                      f"Add a Gmail App Password in Settings, or give {employee.first_name} these sign-in details yourself.")
+        invite = {"created": True, "email_sent": sent, "username": user.username, "detail": detail}
+        if not sent:
+            # Nothing reached the employee, so the employer is the only way in.
+            invite["temporary_password"] = password
+        return invite
 
     def update(self, instance, validated_data):
         document, title = self.pop_contract(validated_data)
@@ -101,9 +146,10 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "job_description", "employment_type", "is_active",
             "photo", "photo_name",
             "contract_document", "contract_title", "latest_contract",
+            "account_status", "invite",
             "created_at",
         ]
-        read_only_fields = ["id", "created_at"]
+        read_only_fields = ["id", "created_at", "account_status", "invite"]
         validators = []
 
 
@@ -134,6 +180,7 @@ class ManagerRecordSerializer(serializers.ModelSerializer):
 class ContractSerializer(ManagerRecordSerializer):
     document = serializers.FileField(write_only=True, required=False)
     document_name = serializers.SerializerMethodField()
+    employee_email = serializers.EmailField(source="employee.email", read_only=True)
 
     def get_document_name(self, obj):
         return obj.document.name.rsplit("/", 1)[-1] if obj.document else ""
@@ -146,13 +193,27 @@ class ContractSerializer(ManagerRecordSerializer):
         return value
 
     def validate(self, attrs):
+        if self.instance and self.instance.signature_status != "draft":
+            raise serializers.ValidationError("A contract cannot be edited after it has been sent for signature.")
         self.validate_dates(attrs)
         return attrs
 
+    def validate_content(self, value):
+        clean = sanitize_contract_html(value)
+        if len(strip_tags(clean)) > 100_000:
+            raise serializers.ValidationError("Contract text must be 100,000 characters or fewer.")
+        return clean
+
     class Meta:
         model = Contract
-        fields = "__all__"
-        read_only_fields = ["created_at"]
+        fields = [
+            "id", "employee", "employee_name", "employee_email", "revision_of", "employer_message", "title", "start_date", "end_date", "status",
+            "terms", "content", "document", "document_name", "signature_status", "sent_at",
+            "notification_sent_at", "signed_at", "signer_name", "signature_data", "created_at",
+        ]
+        read_only_fields = [
+            "created_at", "revision_of", "employer_message", "signature_status", "sent_at", "notification_sent_at", "signed_at", "signer_name", "signature_data",
+        ]
 
 
 class AttendanceSerializer(ManagerRecordSerializer):
@@ -170,16 +231,28 @@ class AttendanceSerializer(ManagerRecordSerializer):
     class Meta:
         model = Attendance
         fields = "__all__"
+        read_only_fields = ["check_in_at", "check_out_at"]
 
 
 class LeaveSerializer(ManagerRecordSerializer):
+    days_requested = serializers.SerializerMethodField()
+
+    def get_days_requested(self, obj):
+        return leave_management.leave_days(obj.employee, obj.start_date, obj.end_date)
+
     def validate(self, attrs):
         self.validate_dates(attrs)
         employee = self.value(attrs, "employee")
         start, end = self.value(attrs, "start_date"), self.value(attrs, "end_date")
         status = self.value(attrs, "status", "pending")
+        leave_type = self.value(attrs, "leave_type", "annual")
         if start < employee.date_joined:
             raise serializers.ValidationError({"start_date": "Leave cannot precede the employee's joining date."})
+        if start.year != end.year:
+            raise serializers.ValidationError({"end_date": "A leave request must stay within one calendar year."})
+        requested = leave_management.leave_days(employee, start, end)
+        if requested <= 0:
+            raise serializers.ValidationError("This period contains no working days.")
         if status != "rejected":
             overlap = LeaveRequest.objects.filter(employee=employee, start_date__lte=end, end_date__gte=start).exclude(status="rejected")
             if self.instance:
@@ -188,11 +261,67 @@ class LeaveSerializer(ManagerRecordSerializer):
                 raise serializers.ValidationError("This leave overlaps another pending or approved request.")
         if status == "approved" and Attendance.objects.filter(employee=employee, date__range=(start, end)).exists():
             raise serializers.ValidationError("Attendance already exists during this leave. Correct the attendance before approving it.")
+        # Legacy records may still carry an older leave category. They remain
+        # reviewable, but only the four current categories affect balances.
+        if status == "approved" and leave_type in leave_management.LEAVE_TYPES and leave_type != "unpaid":
+            balance = next(item for item in leave_management.ensure_leave_balances(employee, start.year)
+                           if item.leave_type == leave_type)
+            available = balance.days_allocated - leave_management.used_days(
+                employee, leave_type, start.year, exclude=self.instance.pk if self.instance else None)
+            if requested > available:
+                raise serializers.ValidationError({
+                    "status": f"Cannot approve {requested} working days; only {max(available, 0)} remain."
+                })
         return attrs
+
+    def save(self, **kwargs):
+        next_status = self.validated_data.get("status", getattr(self.instance, "status", "pending"))
+        previous_status = getattr(self.instance, "status", "pending")
+        if next_status in {"approved", "rejected"} and next_status != previous_status:
+            request = self.context.get("request")
+            user = request.user if request else None
+            kwargs["decided_at"] = timezone.now()
+            kwargs["decided_by"] = user.get_full_name().strip() or user.username if user else "Manager"
+        elif next_status == "pending" and previous_status != "pending":
+            kwargs["decided_at"] = None
+            kwargs["decided_by"] = ""
+        return super().save(**kwargs)
 
     class Meta:
         model = LeaveRequest
         fields = "__all__"
+        read_only_fields = ["requested_at", "decided_at", "decided_by"]
+
+
+class LeaveBalanceSerializer(ManagerRecordSerializer):
+    used_days = serializers.SerializerMethodField()
+    remaining_days = serializers.SerializerMethodField()
+    unlimited = serializers.SerializerMethodField()
+
+    def summary(self, obj):
+        if not hasattr(obj, "_balance_summary"):
+            obj._balance_summary = leave_management.balance_summary(obj)
+        return obj._balance_summary
+
+    def get_used_days(self, obj):
+        return self.summary(obj)["used_days"]
+
+    def get_remaining_days(self, obj):
+        return self.summary(obj)["remaining_days"]
+
+    def get_unlimited(self, obj):
+        return self.summary(obj)["unlimited"]
+
+    def validate_year(self, value):
+        if not 2000 <= value <= 2100:
+            raise serializers.ValidationError("Choose a year between 2000 and 2100.")
+        return value
+
+    class Meta:
+        model = LeaveBalance
+        fields = ["id", "employee", "employee_name", "leave_type", "year", "days_allocated",
+                  "used_days", "remaining_days", "unlimited"]
+        read_only_fields = ["used_days", "remaining_days", "unlimited"]
 
 
 class HolidaySerializer(serializers.ModelSerializer):

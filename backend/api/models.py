@@ -25,19 +25,54 @@ def money_field(**kwargs):
 class Business(models.Model):
     name = models.CharField(max_length=200)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Optional per-business SMTP. When set, invitation email is sent from here
+    # instead of the server console (which never reaches a real inbox).
+    email_host = models.CharField(max_length=200, blank=True)
+    email_port = models.PositiveIntegerField(default=587)
+    email_use_tls = models.BooleanField(default=True)
+    email_host_user = models.EmailField(blank=True)
+    email_host_password = models.CharField(max_length=200, blank=True)
 
     def __str__(self):
         return self.name
 
 
+class InvitationEmailSettings(models.Model):
+    """The single SMTP sender used for invitations across the platform."""
+
+    owner_business = models.ForeignKey(
+        Business, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="owned_invitation_email_settings",
+    )
+    email_host = models.CharField(max_length=200, default="smtp.gmail.com")
+    email_port = models.PositiveIntegerField(default=587)
+    email_use_tls = models.BooleanField(default=True)
+    email_host_user = models.EmailField(blank=True)
+    email_host_password = models.CharField(max_length=200, blank=True)
+
+    def save(self, *args, **kwargs):
+        # There can only be one shared sender configuration.
+        self.pk = 1
+        return super().save(*args, **kwargs)
+
+
 class AccountProfile(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="account_profile")
-    role = models.CharField(max_length=10, choices=[("employee", "Employee"), ("employer", "Employer")])
+    role = models.CharField(max_length=10, choices=[
+        ("employee", "Employee"), ("employer", "Employer"), ("admin", "Admin")])
     business = models.OneToOneField(Business, on_delete=models.PROTECT, null=True, blank=True, related_name="owner_profile")
+    # Set when an employer creates the employee; self-signed-up employees have
+    # no record until an employer hires them.
+    employee = models.OneToOneField("Employee", on_delete=models.SET_NULL, null=True, blank=True, related_name="account")
+    must_change_password = models.BooleanField(default=False)
 
     class Meta:
         constraints = [models.CheckConstraint(
-            condition=(models.Q(role="employee", business__isnull=True) | models.Q(role="employer", business__isnull=False)),
+            condition=(
+                models.Q(role="employee", business__isnull=True)
+                | models.Q(role="employer", business__isnull=False)
+                | models.Q(role="admin", business__isnull=True)
+            ),
             name="account_role_matches_business",
         )]
 
@@ -48,7 +83,7 @@ class Employee(models.Model):
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     email = models.EmailField()
-    department = models.CharField(max_length=100)
+    department = models.CharField(max_length=100, blank=True)
     job_title = models.CharField(max_length=100)
     date_joined = models.DateField()
     phone = models.CharField(max_length=40, blank=True)
@@ -76,14 +111,26 @@ class Employee(models.Model):
 
 class Contract(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="contracts")
+    revision_of = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="revisions")
     title = models.CharField(max_length=200)
     start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=20, default="active", choices=[
         ("draft", "Draft"), ("active", "Active"), ("ended", "Ended")])
     terms = models.TextField(blank=True)
+    content = models.TextField(blank=True)
     document = models.FileField(upload_to=contract_path, blank=True,
         validators=[FileExtensionValidator(["pdf", "doc", "docx"])])
+    signature_status = models.CharField(max_length=20, default="draft", choices=[
+        ("draft", "Draft"), ("sent", "Awaiting signature"), ("signed", "Signed")])
+    sent_at = models.DateTimeField(null=True, blank=True)
+    notification_sent_at = models.DateTimeField(null=True, blank=True)
+    employer_message = models.TextField(blank=True)
+    signed_at = models.DateTimeField(null=True, blank=True)
+    signer_name = models.CharField(max_length=200, blank=True)
+    signature_data = models.TextField(blank=True)
+    signed_ip = models.GenericIPAddressField(null=True, blank=True)
+    content_hash = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -94,6 +141,8 @@ class Attendance(models.Model):
         ("present", "Present"), ("remote", "Remote"), ("absent", "Absent")])
     hours_worked = models.DecimalField(max_digits=4, decimal_places=2, default=0,
         validators=[MinValueValidator(0), MaxValueValidator(24)])
+    check_in_at = models.DateTimeField(null=True, blank=True)
+    check_out_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -103,14 +152,31 @@ class Attendance(models.Model):
 class LeaveRequest(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="leave_requests")
     leave_type = models.CharField(max_length=20, default="annual", choices=[
-        ("annual", "Annual"), ("sick", "Sick"), ("family", "Family responsibility"),
-        ("unpaid", "Unpaid"), ("other", "Other")])
+        ("annual", "Annual"), ("sick", "Sick"), ("maternity", "Maternity"),
+        ("unpaid", "Unpaid")])
     start_date = models.DateField()
     end_date = models.DateField()
     reason = models.TextField(blank=True)
     status = models.CharField(max_length=20, default="pending", choices=[
         ("pending", "Pending"), ("approved", "Approved"), ("rejected", "Rejected")])
     decision_notes = models.TextField(blank=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.CharField(max_length=200, blank=True)
+
+
+class LeaveBalance(models.Model):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="leave_balances")
+    leave_type = models.CharField(max_length=20, choices=[
+        ("annual", "Annual"), ("sick", "Sick"), ("maternity", "Maternity"),
+        ("unpaid", "Unpaid")])
+    year = models.PositiveIntegerField()
+    days_allocated = models.DecimalField(max_digits=5, decimal_places=1, default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(366)])
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["employee", "leave_type", "year"], name="unique_employee_leave_balance")]
 
 
 class Holiday(models.Model):

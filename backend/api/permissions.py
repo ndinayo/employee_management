@@ -15,8 +15,22 @@ def can_manage(user):
     return user.is_staff or user.is_superuser or user.groups.filter(name="Managers").exists()
 
 
+def is_admin(user):
+    if not user or not user.is_authenticated or not user.is_active:
+        return False
+    profile = getattr(user, "account_profile", None)
+    return bool(profile and profile.role == "admin")
+
+
 class IsManager(BasePermission):
     message = "Employer or manager access is required."
 
     def has_permission(self, request, view):
         return can_manage(request.user)
+
+
+class IsAdmin(BasePermission):
+    message = "Administrator access is required."
+
+    def has_permission(self, request, view):
+        return is_admin(request.user)

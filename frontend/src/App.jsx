@@ -1,33 +1,34 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, Navigate, Route, Routes, useNavigate } from "react-router";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import heroImage from "./assets/images/hero.jpeg";
 import { ACCESS_TOKEN } from "./constants";
 import { fetchAccount } from "./api";
 import AuthForm from "./AuthForm";
-import AccountPage from "./AccountPage";
-import ManagerDashboard from "./ManagerDashboard";
+import EmployeeWorkspace from "./components/EmployeeWorkspace";
+import EmployerWorkspace from "./components/EmployerWorkspace";
+import AdminDashboard from "./components/AdminDashboard";
+import ModalDialog from "./components/ModalDialog";
+import { ForgotPasswordPage, ResetPasswordPage } from "./PasswordReset";
+import { workspacePath } from "./workspace";
 import "./App.css";
 import "./ManagerDashboard.css";
 
-function HomePage({
-  token,
-  account,
-  onAuthenticated,
-  onLogout,
-  error,
-}) {
-  const canManage = Boolean(account?.can_manage);
-  const workspacePath = canManage ? "/dashboard" : "/account";
+// Shared site chrome. The public pages and the employee account page use the
+// same header and footer; the manager dashboard keeps its own sidebar layout.
+export function SiteHeader({ token, workspacePath, onLogout, onAuthenticate, home = false }) {
+  // The header is pinned, so it needs a solid backing wherever its white text
+  // is not sitting over the dark hero photo.
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    if (!home) return;
+    const onScroll = () => setScrolled(window.scrollY > 40);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [home]);
   return (
-    <>
-      <section className="hero" id="home">
-        <div
-          className="hero-photo"
-          style={{ backgroundImage: `url(${heroImage})` }}
-          aria-hidden="true"
-        />
-
-        <header className="site-header">
+      <header className={`site-header${home ? "" : " solid"}${scrolled ? " scrolled" : ""}`}>
+        <div className="site-header-inner">
           <Link className="brand" to="/">
             <span className="brand-mark">E</span>
             <span>
@@ -37,7 +38,7 @@ function HomePage({
 
           <nav className="site-nav" aria-label="Main navigation">
             <Link to="/">Home</Link>
-            <a href="#about">About</a>
+            {home ? <a href="#about">About</a> : <Link to="/#about">About</Link>}
             {token && <Link to={workspacePath}>My workspace</Link>}
             {token && <button type="button" className="nav-signout" onClick={onLogout}>Sign out</button>}
           </nav>
@@ -46,12 +47,52 @@ function HomePage({
             <Link className="header-action" to={workspacePath}>
               Open workspace
             </Link>
-          ) : (
-            <a className="header-action" href="#sign-in">
-              Sign in / Sign up
-            </a>
-          )}
-        </header>
+          ) : onAuthenticate ? (
+            <button className="header-action" type="button" onClick={() => onAuthenticate("signin")}>Sign in / Sign up</button>
+          ) : <Link className="header-action" to="/#sign-in">Sign in / Sign up</Link>}
+        </div>
+      </header>
+  );
+}
+
+export function SiteFooter() {
+  return (
+      <footer className="site-footer">
+        <strong>
+          Employee<span>.</span>
+        </strong>
+        <p>A thoughtful place for your people records.</p>
+      </footer>
+  );
+}
+
+function RememberEmployeeDestination() {
+  const location = useLocation();
+  sessionStorage.setItem("employeeSignInDestination", `${location.pathname}${location.search}${location.hash}`);
+  return <Navigate to="/#sign-in" replace />;
+}
+
+function HomePage({
+  token,
+  account,
+  onAuthenticated,
+  onLogout,
+  error,
+}) {
+  const [authMode, setAuthMode] = useState(() => window.location.hash === "#sign-in" ? "signin" : null);
+  const canManage = Boolean(account?.can_manage);
+  const canAdmin = Boolean(account?.can_admin);
+  const path = workspacePath(account);
+  return (
+    <>
+      <SiteHeader token={token} workspacePath={path} onLogout={onLogout} onAuthenticate={setAuthMode} home />
+
+      <section className="hero" id="home">
+        <div
+          className="hero-photo"
+          style={{ backgroundImage: `url(${heroImage})` }}
+          aria-hidden="true"
+        />
 
         <div className="hero-content">
           <p className="eyebrow">EMPLOYEE MANAGEMENT SYSTEM</p>
@@ -65,13 +106,13 @@ function HomePage({
             Find employees, update details, and stay connected to your team.
           </p>
           {token ? (
-            <Link className="button button-coral" to={workspacePath}>
+            <Link className="button button-coral" to={path}>
               Go to workspace &rarr;
             </Link>
           ) : (
-            <a className="button button-coral" href="#sign-in">
+            <button className="button button-coral" type="button" onClick={() => setAuthMode("signin")}>
               Explore the workspace &rarr;
-            </a>
+            </button>
           )}
         </div>
 
@@ -82,7 +123,7 @@ function HomePage({
             <span>OP</span>
           </div>
           <div>
-            <strong>{account?.can_manage ? "Your business" : "One place"}</strong>
+            <strong>{account?.can_admin ? "Platform admin" : account?.can_manage ? "Your business" : "One place"}</strong>
             <small>
               for your people records
             </small>
@@ -110,7 +151,7 @@ function HomePage({
           </p>
         </section>
 
-        {(!token || canManage) && <section className="workspace" id="sign-in">
+        {(!token || canManage || canAdmin) && <section className="workspace" id="sign-in">
           <div className="section-heading">
             <div>
               <p className="eyebrow dark-eyebrow">YOUR WORKSPACE</p>
@@ -125,37 +166,23 @@ function HomePage({
             </p>
           )}
 
-          {canManage ? (
-            <div className="panel signed-in-panel">
-              <h3>You are signed in.</h3>
-              <p>Your workspace is ready.</p>
-              <Link className="button button-coral" to="/dashboard">
-                Open workspace &rarr;
-              </Link>
-            </div>
-          ) : (
-            <div className="login-layout">
-              <AuthForm onAuthenticated={onAuthenticated} />
-
-              <div className="login-aside">
-                <span className="aside-icon" aria-hidden="true">*</span>
-                <h3>Your team, clearly organized.</h3>
-                <p>
-                  Manage employee profiles, contracts, attendance, leave,
-                  salaries, and payslips in one workspace.
-                </p>
-              </div>
-            </div>
-          )}
+          {canManage || canAdmin ? <div className="panel signed-in-panel">
+            <h3>You are signed in.</h3>
+            <p>Your workspace is ready.</p>
+            <Link className="button button-coral" to={path}>
+              Open workspace &rarr;
+            </Link>
+          </div> : <div className="login-layout aside-only"><div className="login-aside">
+            <span className="aside-icon" aria-hidden="true">*</span>
+            <h3>Your team, clearly organized.</h3>
+            <p>Manage employee profiles, contracts, attendance, leave, salaries, and payslips in one workspace.</p>
+          </div></div>}
         </section>}
       </main>
 
-      <footer className="site-footer">
-        <strong>
-          Employee<span>.</span>
-        </strong>
-        <p>A thoughtful place for your people records.</p>
-      </footer>
+      {authMode && !token && <ModalDialog title={authMode === "signup" ? "Create account" : "Sign in"} onClose={() => setAuthMode(null)}><AuthForm key={authMode} initialMode={authMode} onAuthenticated={onAuthenticated} /></ModalDialog>}
+
+      <SiteFooter />
     </>
   );
 }
@@ -200,7 +227,11 @@ function App() {
     setAccount(profile);
     setToken(access);
     setError("");
-    navigate(profile.can_manage ? "/dashboard" : "/account");
+    const destination = sessionStorage.getItem("employeeSignInDestination");
+    sessionStorage.removeItem("employeeSignInDestination");
+    navigate(!profile.can_manage && !profile.can_admin && destination?.startsWith("/account")
+      ? destination
+      : workspacePath(profile));
   }
 
   const pendingAccount = <main className="workspace account-workspace">
@@ -208,10 +239,19 @@ function App() {
       : <p role="status">Loading your account…</p>}
   </main>;
 
+  const withSiteChrome = (content) => <div className="account-layout">
+    <SiteHeader token={token} workspacePath={workspacePath(account)} onLogout={handleLogout} />
+    {content}
+    <SiteFooter />
+  </div>;
+
   return <Routes>
     <Route path="/" element={<HomePage token={token} account={account} onAuthenticated={handleAuthenticated} onLogout={handleLogout} error={error} />} />
-    <Route path="/account" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : <AccountPage account={account} onLogout={handleLogout} />} />
-    <Route path="/dashboard/*" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : account.can_manage ? <ManagerDashboard token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} /> : <Navigate to="/account" replace />} />
+    <Route path="/forgot-password" element={withSiteChrome(<ForgotPasswordPage />)} />
+    <Route path="/reset-password" element={withSiteChrome(<ResetPasswordPage />)} />
+    <Route path="/account" element={!token ? <RememberEmployeeDestination /> : !account ? withSiteChrome(pendingAccount) : account.can_admin ? <Navigate to="/admin" replace /> : withSiteChrome(<EmployeeWorkspace account={account} token={token} onAccountChange={handleAuthenticated} />)} />
+    <Route path="/dashboard/*" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : account.can_admin ? <Navigate to="/admin" replace /> : account.can_manage ? <EmployerWorkspace token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} onAccountChange={(partial) => setAccount((current) => current ? { ...current, ...partial } : current)} /> : <Navigate to="/account" replace />} />
+    <Route path="/admin/*" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : account.can_admin ? <AdminDashboard token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} /> : <Navigate to={workspacePath(account)} replace />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>;
 }

@@ -197,12 +197,11 @@ class ManagerWorkflowTests(APITestCase):
     def test_missing_photo_returns_not_found(self):
         self.assertEqual(self.client.get(f"/api/employees/{self.employee.id}/photo/").status_code, 404)
 
-    def test_employee_with_records_must_be_archived(self):
+    def test_deleting_an_employee_removes_their_records(self):
         Attendance.objects.create(employee=self.employee, date="2026-09-24", hours_worked=8)
-        self.assertEqual(self.client.delete(f"/api/employees/{self.employee.id}/").status_code, 400)
-        result = self.client.patch(f"/api/employees/{self.employee.id}/", {"is_active": False}, format="json")
-        self.assertEqual(result.status_code, 200)
-        self.assertEqual(Attendance.objects.count(), 1)
+        self.assertEqual(self.client.delete(f"/api/employees/{self.employee.id}/").status_code, 204)
+        self.assertFalse(Employee.objects.filter(pk=self.employee.id).exists())
+        self.assertEqual(Attendance.objects.count(), 0)
 
     def test_contract_upload_download_and_private_access(self):
         with TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media):

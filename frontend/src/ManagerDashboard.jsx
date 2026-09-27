@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import ContractViewer from "./ContractViewer";
+import { DigitalContractDocument, RichTextEditor } from "./DigitalContract";
+import ModalDialog from "./components/ModalDialog";
 import { Link, NavLink, Navigate, Route, Routes } from "react-router";
-import { deleteRecord, downloadContract, fetchEmployeePhoto, fetchRecords, fetchReports, markSalaryPaid, saveRecord } from "./api";
+import { deleteRecord, downloadContract, fetchEmailSettings, fetchEmployeePhoto, fetchRecords, fetchReports, markSalaryPaid, requestNewContractSignature, resendContractSignatureEmail, saveEmailSettings, saveRecord, sendContractForSignature } from "./api";
 import { isWeekend, label, longDate, modules, money, shiftDate, today } from "./managerConfig";
 
 function saveBlob(blob, filename) {
@@ -11,6 +13,10 @@ function saveBlob(blob, filename) {
   link.download = filename;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function clockTime(value) {
+  return value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
 }
 
 function exportCsv(filename, columns, rows) {
@@ -101,6 +107,21 @@ function Payslip({ record, onClose }) {
   </dialog>;
 }
 
+function DigitalContractDialog({ contract, onClose }) {
+  const dialog = useRef(null);
+  useEffect(() => {
+    const element = dialog.current;
+    element.showModal();
+    return () => element.close();
+  }, []);
+  return <dialog ref={dialog} className="digital-contract-dialog" onCancel={onClose} aria-label={contract.title}>
+    <div className="payslip-actions">
+      <button className="button button-outline" type="button" onClick={onClose}>Close</button>
+    </div>
+    <DigitalContractDocument contract={contract} />
+  </dialog>;
+}
+
 function RecordField({ field, value, onChange, employees }) {
   const id = `record-${field.name}`;
   const props = { id, name: field.name, value: value ?? "", required: !field.optional, onChange: (event) => onChange(field.name, event.target.value) };
@@ -111,6 +132,8 @@ function RecordField({ field, value, onChange, employees }) {
     input = <select {...props}>{field.options.map(([key, title]) => <option key={key} value={key}>{title}</option>)}</select>;
   } else if (field.type === "textarea") {
     input = <textarea {...props} rows="3" />;
+  } else if (field.type === "richtext") {
+    input = <RichTextEditor value={value} onChange={(html) => onChange(field.name, html)} />;
   } else if (field.type === "checkbox") {
     input = <input id={id} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(field.name, event.target.checked)} />;
   } else if (field.type === "file") {
@@ -118,7 +141,7 @@ function RecordField({ field, value, onChange, employees }) {
   } else {
     input = <input {...props} type={field.type} min={field.min} max={field.max} step={field.step} placeholder={field.placeholder} />;
   }
-  return <div className={field.type === "textarea" || field.type === "file" ? "field-wide" : field.type === "checkbox" ? "checkbox-field" : ""}><label htmlFor={id}>{field.title}{field.optional && field.type !== "file" ? " (optional)" : ""}</label>{input}</div>;
+  return <div className={["textarea", "file", "richtext"].includes(field.type) ? "field-wide" : field.type === "checkbox" ? "checkbox-field" : ""}><label htmlFor={id}>{field.title}{field.optional && field.type !== "file" ? " (optional)" : ""}</label>{input}{field.hint && <small className="field-hint">{field.hint}</small>}</div>;
 }
 
 const markable = [["present", "Present"], ["remote", "Remote"], ["absent", "Absent"]];
@@ -136,11 +159,16 @@ function AttendanceRoster({ date, setDate, rows, holiday, busy, token, onMark, o
         <button className="button button-outline" type="button" disabled={date === latest} onClick={() => setDate(latest)}>Today</button>
       </div>
     </div>
-    <div className="roster-counts">{rosterStates.map(([key, title]) => <span key={key} className={`status-badge status-${key}`}>{rows.filter((row) => row.state === key).length} {title}</span>)}</div>
+    <div className="roster-counts">{rosterStates.map(([key, title]) => <span key={key} className={`status-badge status-${key}`}>{rows.filter((row) => row.state === key).length} {title}</span>)}
+      <span className="status-badge status-sent">{rows.filter((row) => row.record?.check_in_at).length} checked in</span>
+      <span className="status-badge status-signed">{rows.filter((row) => row.record?.check_out_at).length} completed shift</span>
+    </div>
     <DataTable
       columns={[
         { title: "Employee", value: (row) => `${row.first_name} ${row.last_name}`, secondary: (row) => row.department, avatar: true },
         { title: "Status", value: (row) => row.state === "unrecorded" ? "Unrecorded" : row.state === "leave" ? "Leave" : label(row.state), badge: true },
+        { title: "Check-in", value: (row) => clockTime(row.record?.check_in_at) },
+        { title: "Check-out", value: (row) => clockTime(row.record?.check_out_at) },
         { title: "Hours", value: (row) => row.record?.hours_worked },
         { title: "Notes", value: (row) => row.record?.notes },
       ]}
@@ -155,7 +183,41 @@ function AttendanceRoster({ date, setDate, rows, holiday, busy, token, onMark, o
   </section>;
 }
 
-function ResourcePage({ resource, data, token, onChange, onAuthError }) {
+function LeaveBalancesPanel({ balances, token, onChange, onAuthError }) {
+  const year = new Date().getFullYear();
+  const rows = balances.filter((row) => row.year === year);
+  const [drafts, setDrafts] = useState({});
+  const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function save(row) {
+    setBusyId(row.id);
+    setError("");
+    setNotice("");
+    try {
+      const saved = await saveRecord(token, "leave-balances", { days_allocated: drafts[row.id] }, row.id);
+      onChange("leave-balances", saved);
+      setNotice(`${row.employee_name}’s ${label(row.leave_type).toLowerCase()} allowance was updated.`);
+    } catch (err) {
+      setError(err.message);
+      onAuthError(err);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return <section className="panel leave-balances-panel">
+    <div className="list-heading"><div><h3>Leave balances · {year}</h3><p className="muted">Approved working days are deducted automatically. Unpaid leave has no limit.</p></div></div>
+    {error && <p className="message error" role="alert">{error}</p>}
+    {notice && <p className="message success" role="status">{notice}</p>}
+    {!rows.length ? <p className="empty-state">Add an employee to create leave balances.</p> : <div className="table-scroll"><table><thead><tr><th>Employee</th><th>Leave type</th><th>Used</th><th>Remaining</th><th>Yearly allowance</th></tr></thead><tbody>
+      {rows.map((row) => <tr key={row.id}><td>{row.employee_name}</td><td>{label(row.leave_type)}</td><td>{row.used_days}</td><td>{row.unlimited ? "Unlimited" : row.remaining_days}</td><td>{row.unlimited ? "Not limited" : <div className="balance-editor"><input type="number" min="0" max="366" step="0.5" aria-label={`${row.employee_name} ${row.leave_type} allowance`} value={drafts[row.id] ?? row.days_allocated} onChange={(event) => setDrafts((current) => ({ ...current, [row.id]: event.target.value }))} /><button type="button" disabled={busyId === row.id || String(drafts[row.id]) === String(row.days_allocated)} onClick={() => save(row)}>{busyId === row.id ? "Saving…" : "Save"}</button></div>}</td></tr>)}
+    </tbody></table></div>}
+  </section>;
+}
+
+function ResourcePage({ resource, data, token, account, onChange, onAuthError }) {
   const config = modules[resource];
   const [form, setForm] = useState(null);
   const [editing, setEditing] = useState(null);
@@ -166,6 +228,9 @@ function ResourcePage({ resource, data, token, onChange, onAuthError }) {
   const [busy, setBusy] = useState(false);
   const [payslip, setPayslip] = useState(null);
   const [viewing, setViewing] = useState(null);
+  const [digitalViewing, setDigitalViewing] = useState(null);
+  const [signatureRequest, setSignatureRequest] = useState(null);
+  const [signatureMessage, setSignatureMessage] = useState("");
   const [rosterDate, setRosterDate] = useState(today);
   const formRef = useRef(null);
   const employees = data.employees || [];
@@ -192,6 +257,14 @@ function ResourcePage({ resource, data, token, onChange, onAuthError }) {
   });
   const visible = rows.filter((row) => (!status || row.status === status) && config.columns.some((column) => `${column.value(row)} ${column.secondary?.(row) || ""}`.toLowerCase().includes(search.trim().toLowerCase())));
   const statusField = config.fields.find((field) => field.name === "status");
+  const formFields = resource === "employees"
+    ? config.fields.map((field) => field.name !== "email" ? field : {
+      ...field,
+      hint: account?.email_configured
+        ? "We email sign-in details here so they can complete their own profile."
+        : "Mail is not set up yet. After you save you will see the password so you can pass it on, or add Gmail in Settings.",
+    })
+    : config.fields;
 
   function handleError(err) {
     setError(err.message);
@@ -227,6 +300,13 @@ function ResourcePage({ resource, data, token, onChange, onAuthError }) {
     event.preventDefault();
     setError("");
     setNotice("");
+    const saveAndSend = resource === "contracts" && event.nativeEvent.submitter?.value === "send";
+    const recipient = saveAndSend ? employees.find((person) => person.id === Number(form.employee)) : null;
+    if (saveAndSend && !form.content) {
+      setError("Write the digital contract before sending it for signature.");
+      return;
+    }
+    if (saveAndSend && !window.confirm(`Save and email this contract to ${recipient?.email || "the selected employee"} for signature? You will not be able to edit or delete it after sending.`)) return;
     const uploads = config.fields.filter((item) => item.type === "file" && form[item.name]);
     const oversized = uploads.find((item) => form[item.name].size > item.maxSize);
     if (oversized) {
@@ -243,10 +323,18 @@ function ResourcePage({ resource, data, token, onChange, onAuthError }) {
         uploads.forEach((item) => multipart.append(item.name, form[item.name]));
         payload = multipart;
       }
-      const saved = await saveRecord(token, resource, payload, editing?.id);
+      let saved = await saveRecord(token, resource, payload, editing?.id);
+      if (saveAndSend) saved = await sendContractForSignature(token, saved.id);
       onChange(resource, saved);
       if (saved?.latest_contract) onChange("contracts", saved.latest_contract);
-      setNotice(`${label(config.singular)} ${editing ? "updated" : "added"}.`);
+      const invite = saved?.invite;
+      if (saved.notification && !saved.notification.email_sent) {
+        setError(saved.notification.detail);
+      } else {
+        setNotice(saved.notification?.detail || (invite
+          ? `${saved.first_name} ${saved.last_name} was added. ${invite.detail}${invite.temporary_password ? ` Temporary password: ${invite.temporary_password}` : ""}`
+          : `${label(config.singular)} ${editing ? "updated" : "added"}.`));
+      }
       setForm(null);
       setEditing(null);
     } catch (err) { handleError(err); }
@@ -254,7 +342,9 @@ function ResourcePage({ resource, data, token, onChange, onAuthError }) {
   }
 
   async function remove(row) {
-    if (!window.confirm(`Delete this ${config.singular}? This cannot be undone.`)) return;
+    if (!window.confirm(resource === "employees"
+      ? `Permanently delete ${row.first_name} ${row.last_name}? Their sign-in account and records will be removed so this email can be hired again.`
+      : `Delete this ${config.singular}? This cannot be undone.`)) return;
     setBusy(true);
     setError("");
     setNotice("");
@@ -272,6 +362,66 @@ function ResourcePage({ resource, data, token, onChange, onAuthError }) {
     setError("");
     try { saveBlob(await downloadContract(token, row.id), `contract-${row.id}.${row.document_name.split(".").pop()}`); }
     catch (err) { handleError(err); }
+    finally { setBusy(false); }
+  }
+
+  async function sendForSignature(row) {
+    if (!window.confirm(`Email “${row.title}” to ${row.employee_email || row.employee_name} for signature? You will not be able to edit or delete it after sending.`)) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const saved = await sendContractForSignature(token, row.id);
+      onChange("contracts", saved);
+      if (saved.notification?.email_sent) setNotice(saved.notification.detail);
+      else setError(saved.notification?.detail || "The contract is in the employee dashboard, but the email failed.");
+    } catch (err) {
+      // SMTP can finish on the server after the browser has timed out. Reload
+      // this row before reporting failure so a completed send never remains
+      // displayed as a draft.
+      try {
+        const contracts = await fetchRecords(token, "contracts");
+        const latest = contracts.find((contract) => contract.id === row.id);
+        if (latest?.signature_status === "sent") {
+          onChange("contracts", latest);
+          setNotice(`Contract sent to ${latest.employee_email}.`);
+          return;
+        }
+      } catch {
+        // Preserve the original, more useful send error below.
+      }
+      handleError(err);
+    }
+    finally { setBusy(false); }
+  }
+
+  function openSignatureRequest(row, mode) {
+    setError("");
+    setNotice("");
+    setSignatureMessage("");
+    setSignatureRequest({ row, mode });
+  }
+
+  async function submitSignatureRequest(event) {
+    event.preventDefault();
+    const { row, mode } = signatureRequest;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      if (mode === "correct") {
+        const replacement = await requestNewContractSignature(token, row.id, { message: signatureMessage });
+        onChange("contracts", replacement);
+        if (replacement.notification?.email_sent) setNotice(replacement.notification.detail);
+        else setError(replacement.notification?.detail || "The signing request is in the employee dashboard, but its email failed.");
+      } else {
+        const result = await resendContractSignatureEmail(token, row.id, { message: signatureMessage });
+        onChange("contracts", { ...row, employer_message: signatureMessage, notification_sent_at: new Date().toISOString() });
+        setNotice(result.detail);
+      }
+      setSignatureRequest(null);
+      setSignatureMessage("");
+    } catch (err) { handleError(err); }
     finally { setBusy(false); }
   }
 
@@ -315,28 +465,46 @@ function ResourcePage({ resource, data, token, onChange, onAuthError }) {
     finally { setBusy(false); }
   }
 
+  // While hiring, ask only for what the employer knows; editing shows it all.
+  const collapsing = Boolean(config.collapseExtras) && !editing;
+  const coreFields = collapsing ? formFields.filter((field) => field.core) : formFields;
+  const extraFields = collapsing ? formFields.filter((field) => !field.core) : [];
+
+  const renderField = (field) => <div key={field.name} className={field.section ? "field-section field-wide" : undefined}>
+    {field.section && <h4>{field.section}</h4>}
+    <RecordField field={field} value={form[field.name]} employees={employees} onChange={updateField} />
+  </div>;
+
   return <>
-    <div className="section-heading"><div><p className="eyebrow dark-eyebrow">MANAGER WORKSPACE</p><h2>{config.title}</h2><p>{config.description}</p></div><button className="button button-coral" type="button" disabled={busy} onClick={() => openForm()}>+ Add {config.singular}</button></div>
+    <div className="section-heading"><div><p className="eyebrow dark-eyebrow">MANAGER WORKSPACE</p><h2>{config.title}</h2><p>{config.description}</p></div><button className="button button-coral" type="button" disabled={busy} onClick={() => openForm()}>+ {resource === "contracts" ? "Create contract" : `Add ${config.singular}`}</button></div>
     {error && <p className="message error" role="alert">{error}</p>}
     {notice && <p className="message success" role="status">{notice}</p>}
+    {resource === "employees" && !account?.email_configured && <p className="message">Invitation emails are not being sent. <Link to="/dashboard/settings">Add a Gmail App Password in Settings</Link> so new hires receive their sign-in details.</p>}
+    {resource === "leave" && <LeaveBalancesPanel balances={data["leave-balances"] || []} token={token} onChange={onChange} onAuthError={onAuthError} />}
     {config.fields.some((field) => field.type === "employee") && !employees.length && <p className="message"><Link to="/dashboard/employees">Add an employee</Link> to start recording {config.title.toLowerCase()}.</p>}
     {resource === "attendance" && employees.length > 0 && <AttendanceRoster date={rosterDate} setDate={setRosterDate} rows={roster} holiday={holiday} busy={busy} token={token} onMark={markAttendance} onClear={clearAttendance} />}
-    {form && <form className="panel record-form" ref={formRef} onSubmit={submit}>
+    {form && <ModalDialog title={`${editing ? "Edit" : "Add"} ${config.singular}`} wide={resource === "contracts" || config.fields.length > 6} onClose={() => { setForm(null); setEditing(null); }}><form className="record-form" ref={formRef} onSubmit={submit}>
       <h3>{editing ? "Edit" : "Add"} {config.singular}</h3>
-      <fieldset disabled={busy}><div className="record-fields">{config.fields.map((field) => <div key={field.name} className={field.section ? "field-section field-wide" : undefined}>
-        {field.section && <h4>{field.section}</h4>}
-        <RecordField field={field} value={form[field.name]} employees={employees} onChange={updateField} />
-      </div>)}</div>
+      <fieldset disabled={busy}><div className="record-fields">{coreFields.map(renderField)}</div>
+      {extraFields.length > 0 && <details className="optional-fields">
+        <summary>{config.collapseExtras}</summary>
+        <div className="record-fields">{extraFields.map(renderField)}</div>
+      </details>}
+      {resource === "contracts" && form.employee && <p className="message contract-recipient">Signature email recipient: <strong>{employees.find((person) => person.id === Number(form.employee))?.email || "Email unavailable"}</strong></p>}
       {editing?.document_name && <p className="muted">A document is attached. Choosing a new file replaces it.</p>}
       {editing?.photo_name && <div className="photo-hint"><Avatar person={editing} token={token} /><p className="muted">A profile photo is attached. Choosing a new file replaces it.</p></div>}
       {editing?.latest_contract && <div className="photo-hint"><p className="muted">{editing.latest_contract.title} is already on file. Upload another PDF to add a new contract; it will not replace the existing one.</p><button type="button" className="button button-outline" onClick={() => setViewing({ ...editing.latest_contract, employee_name: `${editing.first_name} ${editing.last_name}` })}>View current contract</button></div>}
       {resource === "payroll" && <div className="payroll-preview"><strong>Net pay: {money(Number(form.base_salary || 0) + Number(form.allowances || 0) - Number(form.deductions || 0), form.currency)}</strong><p>Review the base amount for this period. Deductions, tax, overtime, and partial periods are entered manually. Marking paid records payment; it does not transfer funds.</p></div>}
-      <div className="form-actions"><button className="button button-coral" type="submit">{busy ? "Saving…" : "Save " + config.singular}</button><button className="button button-outline" type="button" onClick={() => { setForm(null); setEditing(null); }}>Cancel</button></div></fieldset>
-    </form>}
+      <div className="form-actions"><button className="button button-coral" type="submit" value="draft">{busy ? "Saving…" : resource === "contracts" ? "Save draft" : "Save " + config.singular}</button>{resource === "contracts" && <button className="button button-coral" type="submit" value="send">{busy ? "Sending…" : "Save and send for signature"}</button>}<button className="button button-outline" type="button" onClick={() => { setForm(null); setEditing(null); }}>Cancel</button></div></fieldset>
+    </form></ModalDialog>}
     <section className="panel records-panel" aria-label={config.title}>
       <div className="records-toolbar"><span className="record-count">{visible.length} {visible.length === 1 ? "record" : "records"}</span><div className="records-filters"><input type="search" aria-label={`Search ${config.title.toLowerCase()}`} placeholder="Search records…" value={search} onChange={(event) => setSearch(event.target.value)} />{statusField && <select aria-label="Filter by status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option>{statusField.options.map(([value, title]) => <option key={value} value={value}>{title}</option>)}</select>}<button className="button button-outline" type="button" disabled={!visible.length} onClick={() => exportCsv(`${resource}.csv`, config.columns, visible)}>Export CSV</button></div></div>
       <DataTable columns={config.columns} rows={visible} token={token} empty={search || status ? "No records match these filters." : `No ${config.title.toLowerCase()} yet. Use Add ${config.singular} to get started.`} actions={(row) => <>
-        {!(resource === "payroll" && row.status === "paid") && <><button type="button" disabled={busy} onClick={() => openForm(row)}>{resource === "leave" ? "Review / edit" : "Edit"}</button><button type="button" disabled={busy} className="danger-link" onClick={() => remove(row)}>Delete</button></>}
+        {!(resource === "payroll" && row.status === "paid") && !(resource === "contracts" && row.signature_status !== "draft") && <><button type="button" disabled={busy} onClick={() => openForm(row)}>{resource === "leave" ? "Review / edit" : "Edit"}</button><button type="button" disabled={busy} className="danger-link" onClick={() => remove(row)}>Delete</button></>}
+        {resource === "contracts" && row.content && <button type="button" onClick={() => setDigitalViewing(row)}>Preview</button>}
+        {resource === "contracts" && row.signature_status === "draft" && <button className="button button-coral" type="button" disabled={busy || !row.content} onClick={() => sendForSignature(row)}>Send for signature</button>}
+        {resource === "contracts" && row.signature_status === "sent" && <button type="button" disabled={busy} onClick={() => openSignatureRequest(row, "resend")}>Resend signature email</button>}
+        {resource === "contracts" && row.signature_status === "signed" && <button type="button" disabled={busy} onClick={() => openSignatureRequest(row, "correct")}>Request new signature</button>}
         {resource === "contracts" && row.document_name && <><button type="button" onClick={() => setViewing(row)}>View</button><button type="button" disabled={busy} onClick={() => download(row)}>Download</button></>}
         {resource === "employees" && (row.latest_contract || contractsFor(row.id)[0]) && <button type="button" onClick={() => setViewing({ ...(row.latest_contract || contractsFor(row.id)[0]), employee_name: `${row.first_name} ${row.last_name}` })}>View contract</button>}
         {resource === "salaries" && (paidThisMonth.has(row.employee)
@@ -347,6 +515,13 @@ function ResourcePage({ resource, data, token, onChange, onAuthError }) {
     </section>
     {payslip && <Payslip record={payslip} onClose={() => setPayslip(null)} />}
     {viewing && <ContractViewer contract={viewing} token={token} onClose={() => setViewing(null)} onAuthError={onAuthError} />}
+    {digitalViewing && <DigitalContractDialog contract={digitalViewing} onClose={() => setDigitalViewing(null)} />}
+    {signatureRequest && <ModalDialog title={signatureRequest.mode === "correct" ? "Request a corrected signature" : "Resend signature email"} onClose={() => setSignatureRequest(null)}><form className="record-form" onSubmit={submitSignatureRequest}>
+      <p>{signatureRequest.mode === "correct" ? "The original signed contract will remain in the audit history. A fresh copy will be sent for a new signature." : `Send another signing reminder to ${signatureRequest.row.employee_email}.`}</p>
+      <label htmlFor="signature-request-message">Message to employee (optional)</label>
+      <textarea id="signature-request-message" rows="5" maxLength="2000" value={signatureMessage} onChange={(event) => setSignatureMessage(event.target.value)} placeholder="Example: Please sign again and enter your complete legal name." />
+      <div className="form-actions"><button className="button button-coral" type="submit" disabled={busy}>{busy ? "Sending…" : signatureRequest.mode === "correct" ? "Send new signature request" : "Resend email"}</button><button className="button button-outline" type="button" disabled={busy} onClick={() => setSignatureRequest(null)}>Cancel</button></div>
+    </form></ModalDialog>}
   </>;
 }
 
@@ -395,13 +570,104 @@ function ReportsPage({ token, onAuthError, overview = false }) {
   </>;
 }
 
-export default function ManagerDashboard({ token, account, onLogout, onAuthError }) {
+function SettingsPage({ token, account, onAccountChange, onAuthError }) {
+  const [form, setForm] = useState({ email_host_user: account?.email || "", email_host_password: "" });
+  const [configured, setConfigured] = useState(Boolean(account?.email_configured));
+  const [canManage, setCanManage] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [editOpen, setEditOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchEmailSettings(token).then((settings) => {
+      if (cancelled) return;
+      setForm({ email_host_user: settings.email_host_user || account?.email || "", email_host_password: "" });
+      setConfigured(Boolean(settings.email_configured));
+      setCanManage(Boolean(settings.can_manage_email_settings));
+    }).catch((err) => {
+      if (!cancelled) { setError(err.message); onAuthError(err); }
+    });
+    return () => { cancelled = true; };
+  }, [token, account?.email, onAuthError]);
+
+  function update(event) {
+    const { name, value } = event.target;
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    if (busy) return;
+    setError("");
+    setNotice("");
+    setBusy(true);
+    try {
+      const saved = await saveEmailSettings(token, form);
+      setConfigured(Boolean(saved.email_configured));
+      setForm((current) => ({ ...current, email_host_password: "" }));
+      setNotice(saved.detail || "Invitation email is ready.");
+      onAccountChange?.({ email_configured: saved.email_configured });
+      setEditOpen(false);
+    } catch (err) {
+      setError(err.message);
+      onAuthError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <>
+    <div className="section-heading">
+      <div>
+        <p className="eyebrow dark-eyebrow">WORKSPACE</p>
+        <h2>Settings</h2>
+        <p>The platform automatically emails sign-in details when an employer adds an employee.</p>
+      </div>
+    </div>
+    {error && <p className="message error" role="alert">{error}</p>}
+    {notice && <p className="message success" role="status">{notice}</p>}
+    <section className="panel record-form form-launch-card"><div><h3>Invitation email</h3><p className="muted">{configured ? `Emails are sent from ${form.email_host_user || "the platform email address"}.` : "Invitation email has not been configured."}</p></div>{canManage && <button className="button button-coral" type="button" onClick={() => { setError(""); setEditOpen(true); }}>{configured ? "Update email settings" : "Configure email"}</button>}</section>
+    {editOpen && <ModalDialog title="Invitation email settings" onClose={() => setEditOpen(false)}><form className="record-form" onSubmit={submit}>
+      <h3>Invitation email</h3>
+      <p className="muted">{configured
+        ? `Invitations are being sent from ${form.email_host_user || "your Gmail address"}.`
+        : "Nothing is sent to Gmail until this is set up. New hires will still get an account; you will see their password on the employees page."}</p>
+      {error && <p className="message error" role="alert">{error}</p>}
+      <fieldset disabled={busy}>
+        <div className="record-fields">
+          <div className="field-wide">
+            <label htmlFor="email-host-user">Gmail address</label>
+            <input id="email-host-user" name="email_host_user" type="email" value={form.email_host_user}
+                   onChange={update} autoComplete="username" required />
+            <small className="field-hint">This is the From address employees will see.</small>
+          </div>
+          <div className="field-wide">
+            <label htmlFor="email-host-password">Gmail App Password</label>
+            <input id="email-host-password" name="email_host_password" type="password" value={form.email_host_password}
+                   onChange={update} autoComplete="new-password" required={!configured}
+                   placeholder={configured ? "Unchanged unless you enter a new one" : ""} />
+            <small className="field-hint">On Google's App name field, type Employee Management. Then paste the 16-character password here — not your normal Gmail password.</small>
+          </div>
+        </div>
+        <div className="form-actions">
+          <button className="button button-coral" type="submit" disabled={busy}>
+            {busy ? "Sending test…" : configured ? "Update and send a test" : "Save and send a test"}
+          </button>
+        </div>
+      </fieldset>
+    </form></ModalDialog>}
+  </>;
+}
+
+export default function ManagerDashboard({ token, account, onLogout, onAuthError, onAccountChange }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     let cancelled = false;
-    Promise.all(Object.keys(modules).map(async (resource) => [resource, await fetchRecords(token, resource)])).then((entries) => {
+    Promise.all([...Object.keys(modules), "leave-balances"].map(async (resource) => [resource, await fetchRecords(token, resource)])).then((entries) => {
       if (!cancelled) { setData(Object.fromEntries(entries)); setError(""); }
     }).catch((err) => { if (!cancelled) { setError(err.message); onAuthError(err); } });
     return () => { cancelled = true; };
@@ -413,17 +679,20 @@ export default function ManagerDashboard({ token, account, onLogout, onAuthError
 
   return <>
     <aside className="dashboard-sidebar" aria-label="Manager menu"><Link className="brand" to="/"><span className="brand-mark">E</span><span>Employee<span className="brand-dot">.</span></span></Link><p className="sidebar-label">{account?.business_name || "MANAGER WORKSPACE"}</p>
+      <div className="workspace-identity"><strong>{account?.display_name || account?.username}</strong><span>{account?.role_label || "Employer"}</span></div>
       <nav className="sidebar-nav" aria-label="Manager navigation">
         <NavLink end to="/dashboard" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Overview</NavLink>
         {Object.entries(modules).map(([key, config]) => <NavLink key={key} to={`/dashboard/${key}`} className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>{config.title}</NavLink>)}
         <NavLink to="/dashboard/reports" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Reports</NavLink>
+        <NavLink to="/dashboard/settings" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Settings</NavLink>
       </nav><div className="sidebar-bottom"><Link className="sidebar-link back-link" to="/">← Back to main site</Link><button className="sidebar-signout" type="button" onClick={onLogout}>Sign out</button></div>
     </aside>
     <main className="dashboard-main"><section className="workspace dashboard-workspace">
       {error ? <div className="panel records-panel"><p className="message error" role="alert">{error}</p><button type="button" className="button button-coral" onClick={() => { setError(""); setRetry((value) => value + 1); }}>Retry loading</button></div> : !data ? <p className="empty-state" role="status">Loading manager workspace…</p> : <Routes>
         <Route index element={<ReportsPage key="overview" token={token} onAuthError={onAuthError} overview />} />
         <Route path="reports" element={<ReportsPage key="reports" token={token} onAuthError={onAuthError} />} />
-        {Object.keys(modules).map((resource) => <Route key={resource} path={resource} element={<ResourcePage key={resource} resource={resource} data={data} token={token} onChange={updateRecords} onAuthError={onAuthError} />} />)}
+        <Route path="settings" element={<SettingsPage token={token} account={account} onAccountChange={onAccountChange} onAuthError={onAuthError} />} />
+        {Object.keys(modules).map((resource) => <Route key={resource} path={resource} element={<ResourcePage key={resource} resource={resource} data={data} token={token} account={account} onChange={updateRecords} onAuthError={onAuthError} />} />)}
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>}
     </section></main>

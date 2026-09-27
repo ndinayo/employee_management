@@ -1,12 +1,22 @@
 from django.contrib import admin
 
-from .models import AccountProfile, Business, Employee, Contract, Attendance, LeaveRequest, Holiday, Salary, Payroll
+from .models import (AccountProfile, Business, Employee, Contract, Attendance,
+                     InvitationEmailSettings, LeaveRequest, Holiday, Salary, Payroll)
 
 
 @admin.register(Business)
 class BusinessAdmin(admin.ModelAdmin):
     list_display = ("name", "created_at")
     search_fields = ("name",)
+
+
+@admin.register(InvitationEmailSettings)
+class InvitationEmailSettingsAdmin(admin.ModelAdmin):
+    list_display = ("email_host_user", "email_host", "email_port", "owner_business")
+    exclude = ("email_host_password",)
+
+    def has_add_permission(self, request):
+        return not InvitationEmailSettings.objects.exists()
 
 
 @admin.register(AccountProfile)
@@ -39,8 +49,9 @@ class EmployeeAdmin(admin.ModelAdmin):
 
 @admin.register(Contract)
 class ContractAdmin(admin.ModelAdmin):
-    list_display = ("employee", "title", "start_date", "end_date", "status")
-    list_filter = ("status",)
+    list_display = ("employee", "title", "start_date", "end_date", "status", "signature_status", "signed_at")
+    list_filter = ("status", "signature_status")
+    readonly_fields = ("sent_at", "notification_sent_at", "signed_at", "signer_name", "signature_data", "signed_ip", "content_hash")
 
 
 @admin.register(Attendance)
