@@ -1,5 +1,6 @@
 export function workspacePath(account) {
-  if (account?.can_admin) return "/admin";
+  if (account?.can_admin) return "/dashboard";
   if (account?.can_manage) return "/dashboard";
-  return "/account";
+  if (account?.has_employee_record && !account?.workspace_approved) return "/MyAccount/contract";
+  return "/MyAccount";
 }

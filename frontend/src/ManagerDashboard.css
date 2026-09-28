@@ -45,6 +45,18 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .roster-day .button { padding: 9px 13px; font-size: 12px; }
 .roster-day input { width: auto; min-width: 150px; }
 .roster-counts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.employee-manage-overview { display: grid; gap: 20px; }
+.employee-manage-header { display: flex; align-items: center; gap: 14px; }
+.employee-manage-header .avatar { width: 56px; height: 56px; }
+.employee-manage-header h3, .employee-manage-header p { margin: 0; }
+.employee-manage-header .button { margin-left: auto; }
+.employee-manage-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.employee-manage-facts div { padding: 13px; border-radius: 8px; background: #f6f1e8; }
+.employee-manage-facts dt { color: #756f65; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.employee-manage-facts dd { margin: 5px 0 0; overflow-wrap: anywhere; }
+.employee-manage-section { padding-top: 18px; border-top: 1px solid #ded8cd; }
+.employee-manage-record { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 13px 0; border-bottom: 1px solid #ebe5da; }
+.employee-manage-record p { margin: 4px 0; }
 .name-cell { display: flex; align-items: center; gap: 11px; }
 .avatar { flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%; object-fit: cover; background: var(--mint); }
 .avatar-initials { display: grid; place-items: center; background: var(--burgundy); color: var(--cream); font-size: 12px; font-weight: 800; letter-spacing: .5px; }
@@ -60,11 +72,16 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .manager-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .manager-summary .summary-card { min-width: 0; }
 .manager-summary .summary-card span { font-size: 13px; }
+.summary-card-link { color: inherit; text-decoration: none; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.summary-card-link small { display: block; margin-top: 8px; color: var(--burgundy); font-size: 11px; font-weight: 800; opacity: .7; }
+.summary-card-link:hover, .summary-card-link:focus-visible { border-color: var(--coral); box-shadow: 0 8px 20px #3b24221a; transform: translateY(-2px); outline: none; }
 .report-context { color: #5b625b; line-height: 1.6; font-size: 13px; margin: 24px 0; }
 .report-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 20px; }
 .report-card .list-heading { align-items: start; gap: 12px; margin-bottom: 14px; }
 .report-card .text-button { flex-shrink: 0; }
 .report-card .empty-state { padding: 16px 0; line-height: 1.6; }
+.clickable-row { cursor: pointer; }
+.clickable-row:hover, .clickable-row:focus-visible { background: #f7eee7; outline: 2px solid transparent; }
 .payroll-report { margin-top: 20px; }
 .payroll-preview { margin-top: 20px; padding: 18px; border-radius: 8px; background: var(--mint); }
 .payroll-preview p { margin-bottom: 0; font-size: 13px; line-height: 1.6; }
@@ -104,7 +121,11 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .contract-toolbar { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 5px; padding: 9px; border-bottom: 1px solid #d4cfc4; background: #f7f5f0; }
 .contract-toolbar button, .contract-toolbar select { width: auto; min-height: 34px; padding: 6px 9px; border: 1px solid #d0cbc0; border-radius: 4px; background: white; color: var(--ink); font: inherit; font-size: 12px; }
 .contract-toolbar button:hover { border-color: var(--burgundy); color: var(--burgundy); }
-.contract-editor { width: min(100% - 24px, 800px); min-height: 620px; margin: 12px auto; padding: 64px 68px; outline: 0; background: white; box-shadow: 0 2px 12px #29201c1a; line-height: 1.7; }
+.contract-zoom-controls { display: flex; align-items: center; gap: 5px; margin-left: auto; padding-left: 8px; border-left: 1px solid #d4cfc4; }
+.contract-toolbar .contract-zoom-value { min-width: 56px; }
+.contract-editor-viewport { max-height: min(72vh, 920px); overflow: auto; padding: 18px; overscroll-behavior: contain; }
+.contract-editor-stage { position: relative; margin: 0 auto; }
+.contract-editor { box-sizing: border-box; width: 794px; height: 1123px; overflow-y: auto; padding: 76px; outline: 0; background: white; box-shadow: 0 2px 12px #29201c1a; line-height: 1.7; transform-origin: top left; }
 .contract-editor:empty::before { color: #8b877e; content: attr(data-placeholder); pointer-events: none; }
 .contract-editor h1, .contract-paper-body h1 { font-size: 30px; }
 .contract-editor h2, .contract-paper-body h2 { font-size: 24px; }
@@ -124,12 +145,18 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .contracts-account-section { margin: 34px 0 24px; }
 .compact-heading { margin-bottom: 16px; }
 .employee-contract-card { max-width: 900px; margin-bottom: 20px; padding: 24px; }
+.employee-contract-card.attention-card { border-color: #e4bd3e; background: #fff9df; box-shadow: inset 4px 0 #ffc400; }
 .employee-contract-summary { display: flex; align-items: start; justify-content: space-between; gap: 18px; }
 .employee-contract-summary h3 { margin: 0; color: var(--burgundy); }
 .employee-contract-card details { margin: 20px 0; }
 .employee-contract-card summary { cursor: pointer; color: var(--burgundy); font-weight: 800; }
 .employee-contract-card .digital-contract-document { margin-top: 16px; padding: 40px 44px; border: 1px solid #e2ddd3; box-shadow: none; }
 .contract-sign-form { margin-top: 22px; padding-top: 22px; border-top: 1px solid #ddd7cb; }
+.contract-review-and-sign { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, .8fr); gap: 24px; align-items: start; }
+.contract-review-pane { max-height: calc(100vh - 150px); overflow: auto; padding: 14px; border: 1px solid #d8d1c5; border-radius: 10px; background: #e9e5dd; overscroll-behavior: contain; }
+.contract-review-pane .digital-contract-document { width: 100%; min-height: 720px; padding: 38px 42px; box-shadow: 0 2px 12px #29201c1a; }
+.contract-review-and-sign .contract-sign-form { position: sticky; top: 0; margin: 0; padding: 0; border: 0; }
+.contract-review-and-sign .signature-pad { height: 150px; }
 .contract-sign-form > label:not(.signature-consent) { display: block; margin-top: 16px; font-weight: 700; }
 .signature-pad-wrap { margin-top: 7px; }
 .signature-pad { display: block; width: 100%; max-width: 700px; height: 170px; border: 1px dashed #83796b; border-radius: 7px; background: white; touch-action: none; cursor: crosshair; }
@@ -150,6 +177,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .form-modal .record-form, .form-modal .account-panel, .form-modal .contract-sign-form, .form-modal .login-panel { margin: 0; padding: 0; border: 0; box-shadow: none; background: transparent; }
 .form-modal .login-panel > h3 { display: none; }
 .form-modal .record-form > h3, .form-modal .account-panel > h3, .form-modal .contract-sign-form > h4 { display: none; }
+.confirm-dialog-content > p { margin: 0; color: #4f4742; line-height: 1.7; }
+.confirm-dialog-content .form-actions { margin-top: 24px; }
 .form-launch-card { display: flex; align-items: center; justify-content: space-between; gap: 22px; }
 .form-launch-card h3 { margin: 0 0 6px; }
 .form-launch-card p { margin: 0; }
@@ -192,6 +221,9 @@ body:has(.form-modal[open]) { overflow: hidden; }
   .records-filters, .records-filters input { width: 100%; max-width: none; }
   .report-controls > div { width: 100%; }
   .payslip-dialog { padding: 18px; }
+  .employee-manage-header, .employee-manage-record { align-items: flex-start; flex-direction: column; }
+  .employee-manage-header .button { margin-left: 0; }
+  .employee-manage-facts { grid-template-columns: 1fr; }
   .viewer-dialog { padding: 14px; height: 94dvh; width: calc(100% - 16px); max-height: 94dvh; }
   .viewer-bar { gap: 10px; margin-bottom: 8px; }
   .viewer-bar > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -199,9 +231,13 @@ body:has(.form-modal[open]) { overflow: hidden; }
   .pdf-pagination { gap: 6px; }
   .pdf-toolbar .button { padding: 8px; }
   .pdf-viewport { padding: 8px; }
-  .contract-editor { width: 100%; min-height: 500px; margin: 0; padding: 30px 22px; box-shadow: none; }
+  .contract-editor-viewport { padding: 10px; }
   .digital-contract-dialog { width: calc(100% - 16px); padding: 12px; }
   .digital-contract-document, .employee-contract-card .digital-contract-document { padding: 28px 20px; }
+  .contract-review-and-sign { grid-template-columns: 1fr; }
+  .contract-review-pane { max-height: 55vh; padding: 7px; }
+  .contract-review-pane .digital-contract-document { min-height: 0; padding: 26px 18px; }
+  .contract-review-and-sign .contract-sign-form { position: static; }
   .employee-contract-summary { flex-direction: column; }
   .leave-balance-grid, .leave-date-fields { grid-template-columns: 1fr; }
 }

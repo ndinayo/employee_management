@@ -209,8 +209,8 @@ def send_invite(employee, user, password):
         f"Temporary password: {password}\n\n"
         f"You can sign in with either your username or your email address. You will be asked to "
         f"choose your own password the first time you sign in.\n\n"
-        f"Once you are in, please complete your profile — phone number, address and emergency "
-        f"contact — so your employer has your details on file.\n\n"
+        f"Once you are in, please complete your profile: phone number, address and emergency "
+        f"contact, so your employer has your details on file.\n\n"
         f"If you were not expecting this email, you can ignore it.\n"
     )
     try:
@@ -246,7 +246,7 @@ def send_contract_notification(contract, message=""):
     if connection is None:
         return False
     business = contract.employee.business.name if contract.employee.business_id else "Your employer"
-    destination = (f"{settings.FRONTEND_URL}/account?contract={contract.pk}#contracts"
+    destination = (f"{settings.FRONTEND_URL}/MyAccount/contract?contract={contract.pk}"
                    if settings.FRONTEND_URL else sign_in_url())
     employer_note = f"\nMessage from {business}:\n{message.strip()}\n" if message.strip() else ""
     try:
@@ -265,6 +265,149 @@ def send_contract_notification(contract, message=""):
         return bool(sent)
     except Exception:
         logger.exception("Contract notification to %s failed", contract.employee.email)
+        return False
+
+
+def send_contract_worker_approval_notification(contract, event):
+    """Notify the employer after signing and congratulate the employee after approval."""
+    employee = contract.employee
+    connection = mail_connection(employee.business)
+    if connection is None:
+        return False
+    business = employee.business.name if employee.business_id else "Your employer"
+    if event == "signed":
+        from .models import AccountProfile
+        recipients = list(AccountProfile.objects.filter(
+            business=employee.business, role="employer", user__email__gt="",
+        ).values_list("user__email", flat=True).distinct()) if employee.business_id else []
+        subject = f"Approve {employee} to start working"
+        destination = (f"{settings.FRONTEND_URL}/dashboard/contracts"
+                       if settings.FRONTEND_URL else sign_in_url())
+        body = (
+            f"{employee} has signed the contract \"{contract.title}\".\n\n"
+            "Review the signed contract and approve this person as a worker before their workspace is unlocked.\n\n"
+            f"Review contracts: {destination}"
+        )
+    else:
+        recipients = [employee.email] if employee.email else []
+        subject = f"Congratulations! You are approved to start working at {business}"
+        destination = (f"{settings.FRONTEND_URL}/MyAccount"
+                       if settings.FRONTEND_URL else sign_in_url())
+        body = (
+            f"Hello {employee.first_name},\n\n"
+            f"Congratulations! {business} approved your signed contract and you may now start working.\n\n"
+            f"Your employee workspace is now available: {destination}"
+        )
+    if not recipients:
+        return False
+    try:
+        sent = send_mail(
+            subject, body, from_address(employee.business), recipients,
+            fail_silently=False, connection=connection,
+        )
+        return bool(sent)
+    except Exception:
+        logger.exception("Contract worker approval notification failed for contract %s", contract.pk)
+        return False
+def send_contract_termination_notification(termination, event):
+    """Notify the other party whenever a contract termination changes."""
+    contract = termination.contract
+    employee = contract.employee
+    connection = mail_connection(employee.business)
+    if connection is None:
+        return False
+    business = employee.business.name if employee.business_id else "Your employer"
+    employee_destination = (f"{settings.FRONTEND_URL}/MyAccount/contract"
+                            if settings.FRONTEND_URL else sign_in_url())
+    employer_destination = (f"{settings.FRONTEND_URL}/dashboard/contracts"
+                            if settings.FRONTEND_URL else sign_in_url())
+    if event in {"employee_requested", "employee_acknowledged"}:
+        from .models import AccountProfile
+        recipients = list(AccountProfile.objects.filter(
+            business=employee.business, role="employer", user__email__gt="",
+        ).values_list("user__email", flat=True).distinct()) if employee.business_id else []
+        if event == "employee_requested":
+            subject = f"{employee} requested contract termination"
+            action = "submitted a termination request for employer review"
+        else:
+            subject = f"{employee} acknowledged contract termination"
+            action = "acknowledged the termination and the contract is now terminated by mutual agreement"
+        destination = employer_destination
+    else:
+        recipients = [employee.email] if employee.email else []
+        if event == "employer_initiated":
+            subject = f"{business} initiated contract termination"
+            action = "initiated termination and is waiting for your acknowledgement"
+        elif event == "employer_approved":
+            subject = "Your contract termination request was approved"
+            action = "approved your request; the contract is now terminated by mutual agreement"
+        else:
+            subject = "Your contract termination request was rejected"
+            action = "rejected your termination request"
+        destination = employee_destination
+    if not recipients:
+        return False
+    notes = f"\nResponse notes: {termination.response_notes}\n" if termination.response_notes else ""
+    body = (
+        f"Contract: {contract.title}\n"
+        f"{business} / {employee}\n\n"
+        f"The other party has {action}.\n"
+        f"Proposed last working date: {termination.proposed_last_working_date}\n"
+        f"Reason: {termination.reason}\n"
+        f"{notes}\nOpen the contract record: {destination}"
+    )
+    try:
+        sent = send_mail(
+            subject, body, from_address(employee.business), recipients,
+            fail_silently=False, connection=connection,
+        )
+        return bool(sent)
+    except Exception:
+        logger.exception("Contract termination notification failed for contract %s", contract.pk)
+        return False
+
+
+def send_leave_notification(leave, event):
+    """Email the other party when a leave request changes."""
+    connection = mail_connection(leave.employee.business)
+    if connection is None:
+        return False
+    employee = leave.employee
+    business = employee.business.name if employee.business_id else "your employer"
+    period = f"{leave.start_date} to {leave.end_date}"
+    leave_name = leave.get_leave_type_display()
+    destination = f"{settings.FRONTEND_URL}/MyAccount/leave" if settings.FRONTEND_URL else sign_in_url()
+
+    if event in {"approved", "rejected"}:
+        recipients = [employee.email] if employee.email else []
+        subject = f"Your {leave_name.lower()} leave request was {event}"
+        notes = f"\nEmployer notes: {leave.decision_notes}\n" if leave.decision_notes else ""
+        body = (
+            f"Hello {employee.first_name},\n\n"
+            f"Your {leave_name.lower()} leave request for {period} was {event} by {business}.\n"
+            f"{notes}\nView the request in your employee workspace: {destination}"
+        )
+    else:
+        from .models import AccountProfile
+        recipients = list(AccountProfile.objects.filter(
+            business=employee.business, role="employer", user__email__gt="",
+        ).values_list("user__email", flat=True).distinct()) if employee.business_id else []
+        action = {"created": "submitted", "updated": "updated", "cancelled": "cancelled"}[event]
+        subject = f"{employee} {action} a leave request"
+        reason = f"\nReason: {leave.reason}\n" if leave.reason else ""
+        body = (
+            f"{employee} has {action} a {leave_name.lower()} leave request for {period}.\n"
+            f"{reason}\nOpen Employee Management to review leave requests."
+        )
+
+    if not recipients:
+        return False
+    try:
+        sent = send_mail(subject, body, from_address(employee.business), recipients,
+                         fail_silently=False, connection=connection)
+        return bool(sent)
+    except Exception:
+        logger.exception("Leave %s notification failed for request %s", event, leave.pk)
         return False
 
 

@@ -1,5 +1,6 @@
 import base64
 import binascii
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from hashlib import sha256
 from io import BytesIO
@@ -11,6 +12,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
@@ -26,16 +28,33 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from PIL import Image, UnidentifiedImageError
 
 from . import leave_management, onboarding
-from .models import (AccountProfile, Attendance, Business, Contract, Employee,
+from .models import (AccountProfile, Announcement, AnnouncementRead, Attendance, Business,
+                     CalendarEvent, CalendarEventRead, Contract, ContractTerminationRequest, Employee,
                      InvitationEmailSettings, LeaveBalance, LeaveRequest)
 from .permissions import can_manage, is_admin
-from .serializers import LeaveBalanceSerializer
+from .serializers import ContractTerminationSerializer, LeaveBalanceSerializer
 
 
 def employee_record(user):
     """The Employee row an employer created for this account, if any."""
     profile = getattr(user, "account_profile", None)
     return profile.employee if profile and profile.employee_id else None
+
+
+def employee_has_signed_contract(employee):
+    return bool(employee and Contract.objects.filter(employee=employee, signature_status="signed").exists())
+
+
+def employee_has_approved_contract(employee):
+    return bool(employee and Contract.objects.filter(
+        employee=employee, signature_status="signed", worker_approval_status="approved",
+    ).exists())
+
+
+def require_signed_contract(employee):
+    if not employee_has_approved_contract(employee):
+        raise PermissionDenied("Your employer must approve your signed contract before you can access the employee workspace.")
+    return employee
 
 
 def business_name_for(profile, employee):
@@ -66,6 +85,8 @@ def account_data(user):
         "can_admin": admin,
         "must_change_password": bool(profile and profile.must_change_password),
         "has_employee_record": employee is not None,
+        "has_signed_contract": employee_has_signed_contract(employee),
+        "workspace_approved": employee_has_approved_contract(employee),
         "email_configured": onboarding.can_deliver(business) if manager else False,
     }
 
@@ -408,10 +429,11 @@ class MyProfileView(APIView):
         return employee
 
     def get(self, request):
-        return Response(MyProfileSerializer(self.get_record(request)).data)
+        return Response(MyProfileSerializer(require_signed_contract(self.get_record(request))).data)
 
     def patch(self, request):
-        serializer = MyProfileSerializer(self.get_record(request), data=request.data, partial=True)
+        employee = require_signed_contract(self.get_record(request))
+        serializer = MyProfileSerializer(employee, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
@@ -424,7 +446,7 @@ class MyPhotoView(APIView):
     def get(self, request):
         from django.http import FileResponse, Http404
 
-        employee = MyProfileView().get_record(request)
+        employee = require_signed_contract(MyProfileView().get_record(request))
         if not employee.photo:
             raise Http404("No photo is attached to this profile.")
         try:
@@ -436,14 +458,89 @@ class MyPhotoView(APIView):
         return response
 
 
+class MyAnnouncementSerializer(serializers.ModelSerializer):
+    is_read = serializers.SerializerMethodField()
+
+    def get_is_read(self, obj):
+        employee = self.context["employee"]
+        return any(item.employee_id == employee.id for item in obj.reads.all())
+
+    class Meta:
+        model = Announcement
+        fields = ["id", "title", "message", "created_by", "published_at", "is_read"]
+
+
+class MyAnnouncementsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        employee = require_signed_contract(employee_record(request.user))
+        rows = Announcement.objects.filter(business=employee.business).prefetch_related("reads")
+        return Response(MyAnnouncementSerializer(rows, many=True, context={"employee": employee}).data)
+
+
+class MyAnnouncementReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        employee = require_signed_contract(employee_record(request.user))
+        announcement = Announcement.objects.filter(pk=pk, business=employee.business).first()
+        if not announcement:
+            raise PermissionDenied("You cannot access this announcement.")
+        AnnouncementRead.objects.get_or_create(announcement=announcement, employee=employee)
+        return Response(MyAnnouncementSerializer(
+            announcement, context={"employee": employee}).data)
+
+
+class MyCalendarView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        employee = require_signed_contract(employee_record(request.user))
+        events = CalendarEvent.objects.filter(business=employee.business).filter(
+            Q(all_employees=True) | Q(invited_employees=employee)
+        ).distinct().prefetch_related("reads")
+        return Response(MyCalendarEventSerializer(events, many=True, context={"employee": employee}).data)
+
+
+class MyCalendarEventSerializer(serializers.ModelSerializer):
+    is_read = serializers.SerializerMethodField()
+
+    def get_is_read(self, obj):
+        employee = self.context["employee"]
+        return any(item.employee_id == employee.id for item in obj.reads.all())
+
+    class Meta:
+        model = CalendarEvent
+        fields = ["id", "title", "category", "date", "end_date", "start_time", "end_time",
+                  "location", "description", "created_by", "created_at", "is_read"]
+
+
+class MyCalendarEventReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        employee = require_signed_contract(employee_record(request.user))
+        event = CalendarEvent.objects.filter(pk=pk, business=employee.business).filter(
+            Q(all_employees=True) | Q(invited_employees=employee)
+        ).distinct().prefetch_related("reads").first()
+        if not event:
+            raise PermissionDenied("You cannot access this calendar event.")
+        CalendarEventRead.objects.get_or_create(event=event, employee=employee)
+        event = CalendarEvent.objects.prefetch_related("reads").get(pk=event.pk)
+        return Response(MyCalendarEventSerializer(event, context={"employee": employee}).data)
+
+
 class MyAttendanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Attendance
-        fields = ["id", "date", "status", "hours_worked", "check_in_at", "check_out_at"]
+        fields = ["id", "date", "shift", "status", "hours_worked", "check_in_at", "check_out_at"]
 
 
 class AttendanceClockSerializer(serializers.Serializer):
     action = serializers.ChoiceField(choices=["check_in", "check_out"])
+    shift = serializers.ChoiceField(choices=["day", "night"], default="day")
+    time = serializers.TimeField()
 
 
 class MyAttendanceView(APIView):
@@ -456,55 +553,90 @@ class MyAttendanceView(APIView):
             raise PermissionDenied("Your account is not linked to an employee record.")
         if not employee.is_active:
             raise PermissionDenied("Your employee profile is inactive.")
-        return employee
+        return require_signed_contract(employee)
 
-    def response_data(self, employee, date):
-        attendance = Attendance.objects.filter(employee=employee, date=date).first()
-        return {"date": date, "attendance": MyAttendanceSerializer(attendance).data if attendance else None}
+    def response_data(self, employee, date, selected_shift="day"):
+        shifts = list(Attendance.objects.filter(employee=employee, date=date).order_by("id"))
+        attendance = next((item for item in shifts if item.shift == selected_shift), None)
+        total = sum((item.hours_worked for item in shifts), Decimal("0.00"))
+        return {
+            "date": date,
+            "attendance": MyAttendanceSerializer(attendance).data if attendance else None,
+            "shifts": MyAttendanceSerializer(shifts, many=True).data,
+            "total_hours": f"{total:.2f}",
+        }
 
     def get(self, request):
         employee = self.employee(request)
-        return Response(self.response_data(employee, timezone.localdate()))
+        date = timezone.localdate()
+        active = Attendance.objects.filter(
+            employee=employee,
+            date__gte=date - timedelta(days=1),
+            check_in_at__isnull=False,
+            check_out_at__isnull=True,
+        ).order_by("-date", "-id").first()
+        return Response(self.response_data(employee, active.date if active else date, active.shift if active else "day"))
 
     def post(self, request):
         employee = self.employee(request)
         serializer = AttendanceClockSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         action = serializer.validated_data["action"]
+        shift = serializer.validated_data["shift"]
+        selected_time = serializer.validated_data["time"]
         now = timezone.now()
         date = timezone.localdate(now)
-        if date < employee.date_joined:
+        if action == "check_in" and date < employee.date_joined:
             raise serializers.ValidationError("You cannot check in before your employment start date.")
-        if LeaveRequest.objects.filter(
+        if action == "check_in" and LeaveRequest.objects.filter(
             employee=employee, status="approved", start_date__lte=date, end_date__gte=date,
         ).exists():
             raise serializers.ValidationError("You are recorded as being on approved leave today.")
         with transaction.atomic():
-            attendance = Attendance.objects.select_for_update().filter(employee=employee, date=date).first()
+            attendance = Attendance.objects.select_for_update().filter(employee=employee, date=date, shift=shift).first()
+            if action == "check_out" and attendance is None and shift == "night":
+                attendance = Attendance.objects.select_for_update().filter(
+                    employee=employee,
+                    date=date - timedelta(days=1),
+                    shift="night",
+                    check_in_at__isnull=False,
+                    check_out_at__isnull=True,
+                ).first()
             if action == "check_in":
                 if attendance and attendance.check_in_at:
-                    raise serializers.ValidationError("You have already checked in today.")
+                    raise serializers.ValidationError(f"You have already checked in for the {shift} shift.")
+                active = Attendance.objects.select_for_update().filter(
+                    employee=employee, check_in_at__isnull=False, check_out_at__isnull=True,
+                ).first()
+                if active:
+                    raise serializers.ValidationError(f"Check out of the {active.shift} shift before starting another shift.")
                 if attendance is None:
-                    attendance = Attendance(employee=employee, date=date)
+                    attendance = Attendance(employee=employee, date=date, shift=shift)
+                recorded_at = timezone.make_aware(datetime.combine(date, selected_time), timezone.get_current_timezone())
                 attendance.status = "present"
                 attendance.hours_worked = Decimal("0.00")
-                attendance.check_in_at = now
+                attendance.check_in_at = recorded_at
                 attendance.check_out_at = None
                 attendance.save()
             else:
                 if not attendance or not attendance.check_in_at:
-                    raise serializers.ValidationError("Check in before checking out.")
+                    raise serializers.ValidationError(f"Check in to the {shift} shift before checking out.")
                 if attendance.check_out_at:
-                    raise serializers.ValidationError("You have already checked out today.")
-                seconds = max(0, (now - attendance.check_in_at).total_seconds())
-                attendance.check_out_at = now
+                    raise serializers.ValidationError(f"You have already checked out of the {shift} shift.")
+                recorded_at = timezone.make_aware(datetime.combine(attendance.date, selected_time), timezone.get_current_timezone())
+                if shift == "night" and recorded_at <= attendance.check_in_at:
+                    recorded_at += timedelta(days=1)
+                if recorded_at <= attendance.check_in_at:
+                    raise serializers.ValidationError("Check-out time must be later than check-in time.")
+                seconds = (recorded_at - attendance.check_in_at).total_seconds()
+                attendance.check_out_at = recorded_at
                 attendance.status = "present"
                 attendance.hours_worked = min(
                     Decimal("24.00"),
                     (Decimal(str(seconds)) / Decimal("3600")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
                 )
                 attendance.save(update_fields=["check_out_at", "status", "hours_worked"])
-        return Response(self.response_data(employee, date))
+        return Response(self.response_data(employee, attendance.date, shift))
 
 
 class MyLeaveRequestSerializer(serializers.ModelSerializer):
@@ -515,7 +647,8 @@ class MyLeaveRequestSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         employee = self.context["employee"]
-        start, end = attrs["start_date"], attrs["end_date"]
+        start = attrs.get("start_date", self.instance.start_date if self.instance else None)
+        end = attrs.get("end_date", self.instance.end_date if self.instance else None)
         if end < start:
             raise serializers.ValidationError({"end_date": "End date must be on or after the start date."})
         if start < timezone.localdate():
@@ -526,9 +659,12 @@ class MyLeaveRequestSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"end_date": "A leave request must stay within one calendar year."})
         if leave_management.leave_days(employee, start, end) <= 0:
             raise serializers.ValidationError("This period contains no working days.")
-        if LeaveRequest.objects.filter(
+        overlap = LeaveRequest.objects.filter(
             employee=employee, start_date__lte=end, end_date__gte=start,
-        ).exclude(status="rejected").exists():
+        ).exclude(status="rejected")
+        if self.instance:
+            overlap = overlap.exclude(pk=self.instance.pk)
+        if overlap.exists():
             raise serializers.ValidationError("This leave overlaps another pending or approved request.")
         return attrs
 
@@ -546,7 +682,7 @@ class MyLeaveView(APIView):
         employee = employee_record(request.user)
         if not employee:
             raise PermissionDenied("Your account is not linked to an employee record.")
-        return employee
+        return require_signed_contract(employee)
 
     def get(self, request):
         employee = self.employee(request)
@@ -566,19 +702,35 @@ class MyLeaveView(APIView):
         serializer = MyLeaveRequestSerializer(data=request.data, context={"employee": employee})
         serializer.is_valid(raise_exception=True)
         request_record = serializer.save(employee=employee, status="pending")
+        onboarding.send_leave_notification(request_record, "created")
         return Response(MyLeaveRequestSerializer(request_record).data, status=status.HTTP_201_CREATED)
 
 
 class MyLeaveDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def delete(self, request, pk):
+    def record(self, request, pk):
         employee = employee_record(request.user)
-        record = LeaveRequest.objects.filter(pk=pk, employee=employee).first()
+        require_signed_contract(employee)
+        record = LeaveRequest.objects.select_related("employee", "employee__business").filter(pk=pk, employee=employee).first()
         if not record:
             raise PermissionDenied("You cannot access this leave request.")
         if record.status != "pending":
-            raise serializers.ValidationError("Only pending leave requests can be cancelled.")
+            raise serializers.ValidationError("Only pending leave requests can be changed.")
+        return record
+
+    def patch(self, request, pk):
+        record = self.record(request, pk)
+        serializer = MyLeaveRequestSerializer(record, data=request.data, partial=True,
+                                               context={"employee": record.employee})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        onboarding.send_leave_notification(record, "updated")
+        return Response(serializer.data)
+
+    def delete(self, request, pk):
+        record = self.record(request, pk)
+        onboarding.send_leave_notification(record, "cancelled")
         record.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -586,12 +738,19 @@ class MyLeaveDetailView(APIView):
 class MyContractSerializer(serializers.ModelSerializer):
     employee_name = serializers.CharField(source="employee.__str__", read_only=True)
     business_name = serializers.CharField(source="employee.business.name", read_only=True)
+    termination = serializers.SerializerMethodField()
+
+    def get_termination(self, obj):
+        request = obj.termination_requests.order_by("-created_at", "-id").first()
+        return ContractTerminationSerializer(request).data if request else None
 
     class Meta:
         model = Contract
         fields = [
-            "id", "employee_name", "business_name", "title", "start_date", "end_date",
+            "id", "employee_name", "business_name", "title", "department", "start_date", "end_date", "status",
             "content", "employer_message", "signature_status", "sent_at", "signed_at", "signer_name", "signature_data",
+            "worker_approval_status", "worker_approved_at", "worker_approved_by",
+            "termination",
         ]
 
 
@@ -664,11 +823,76 @@ class MyContractSignView(APIView):
                 raise serializers.ValidationError("This contract changed after it was sent. Ask your employer to resend it.")
             contract.signature_status = "signed"
             contract.status = "active"
+            contract.worker_approval_status = "pending"
+            contract.worker_approved_at = None
+            contract.worker_approved_by = ""
             contract.signed_at = timezone.now()
             contract.signer_name = signer_name
             contract.signature_data = serializer.validated_data["signature_data"]
             contract.signed_ip = request.META.get("REMOTE_ADDR") or None
             contract.save(update_fields=[
-                "signature_status", "status", "signed_at", "signer_name", "signature_data", "signed_ip",
+                "signature_status", "status", "worker_approval_status", "worker_approved_at", "worker_approved_by",
+                "signed_at", "signer_name", "signature_data", "signed_ip",
             ])
+        onboarding.send_contract_worker_approval_notification(contract, "signed")
+        return Response(MyContractSerializer(contract).data)
+
+
+class ContractTerminationRequestSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=4000, trim_whitespace=True)
+    proposed_last_working_date = serializers.DateField()
+
+
+class MyContractTerminationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        employee = employee_record(request.user)
+        if not employee:
+            raise PermissionDenied("Your account is not linked to an employee record.")
+        payload = ContractTerminationRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        with transaction.atomic():
+            contract = Contract.objects.select_for_update().filter(pk=pk, employee=employee).first()
+            if not contract:
+                raise PermissionDenied("You cannot access this contract.")
+            if contract.signature_status != "signed" or contract.worker_approval_status != "approved" or contract.status != "active":
+                raise serializers.ValidationError("Only an active signed contract can be terminated.")
+            if payload.validated_data["proposed_last_working_date"] < timezone.localdate():
+                raise serializers.ValidationError({"proposed_last_working_date": "Choose today or a future date."})
+            if contract.termination_requests.filter(status__in=["pending", "awaiting_acknowledgement"]).exists():
+                raise serializers.ValidationError("This contract already has a pending termination request.")
+            termination = ContractTerminationRequest.objects.create(
+                contract=contract,
+                initiated_by="employee",
+                status="pending",
+                **payload.validated_data,
+            )
+        onboarding.send_contract_termination_notification(termination, "employee_requested")
+        return Response(MyContractSerializer(contract).data, status=status.HTTP_201_CREATED)
+
+
+class MyContractTerminationAcknowledgeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        employee = employee_record(request.user)
+        if not employee:
+            raise PermissionDenied("Your account is not linked to an employee record.")
+        with transaction.atomic():
+            contract = Contract.objects.select_for_update().filter(pk=pk, employee=employee).first()
+            if not contract:
+                raise PermissionDenied("You cannot access this contract.")
+            termination = contract.termination_requests.select_for_update().filter(
+                initiated_by="employer", status="awaiting_acknowledgement",
+            ).order_by("-created_at", "-id").first()
+            if not termination:
+                raise serializers.ValidationError("There is no employer termination awaiting acknowledgement.")
+            termination.status = "acknowledged"
+            termination.responded_at = timezone.now()
+            termination.save(update_fields=["status", "responded_at"])
+            contract.status = "terminated_mutual"
+            contract.end_date = termination.proposed_last_working_date
+            contract.save(update_fields=["status", "end_date"])
+        onboarding.send_contract_termination_notification(termination, "employee_acknowledged")
         return Response(MyContractSerializer(contract).data)

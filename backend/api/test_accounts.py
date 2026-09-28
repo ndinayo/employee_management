@@ -17,7 +17,8 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 from PIL import Image
 
-from .models import (AccountProfile, Attendance, Business, Contract, Employee, Holiday,
+from .models import (AccountProfile, Announcement, AnnouncementRead, Attendance, Business,
+                     CalendarEvent, CalendarEventRead, Contract, Employee, Holiday,
                      InvitationEmailSettings, LeaveRequest, Payroll, Salary)
 
 
@@ -298,6 +299,16 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertIsNotNone(match, mail.outbox[0].body)
         return match.group(1)
 
+    def signed_contract(self, employee, approved=True):
+        return Contract.objects.create(
+            employee=employee,
+            title="Signed employment contract",
+            start_date=timezone.localdate(),
+            status="active",
+            signature_status="signed",
+            worker_approval_status="approved" if approved else "pending",
+        )
+
     def test_hire_needs_only_names_title_and_email(self):
         result = self.hire()
         self.assertEqual(result.status_code, 201, result.data)
@@ -326,9 +337,107 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertNotIn("temporary_password", result.data["invite"])
         self.assertTrue(account.user.check_password(self.emailed_password()))
 
+    def test_employee_workspace_is_locked_until_employer_approves_signed_contract(self):
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        self.client.force_authenticate(employee.account.user)
+
+        account = self.client.get("/api/account/")
+        self.assertFalse(account.data["has_signed_contract"])
+        self.assertEqual(self.client.get("/api/me/contracts/").status_code, 200)
+        self.assertEqual(self.client.get("/api/me/profile/").status_code, 403)
+        self.assertEqual(self.client.get("/api/me/attendance/").status_code, 403)
+        self.assertEqual(self.client.get("/api/me/leave/").status_code, 403)
+
+        contract = self.signed_contract(employee, approved=False)
+        self.assertTrue(self.client.get("/api/account/").data["has_signed_contract"])
+        self.assertFalse(self.client.get("/api/account/").data["workspace_approved"])
+        self.assertEqual(self.client.get("/api/me/profile/").status_code, 403)
+
+        self.client.force_authenticate(self.employer)
+        approved = self.client.post(f"/api/contracts/{contract.pk}/approve-worker/", {}, format="json")
+        self.assertEqual(approved.status_code, 200, approved.data)
+        self.assertEqual(approved.data["worker_approval_status"], "approved")
+        self.assertIn("Congratulations", mail.outbox[-1].subject)
+
+        self.client.force_authenticate(employee.account.user)
+        self.assertTrue(self.client.get("/api/account/").data["workspace_approved"])
+        self.assertEqual(self.client.get("/api/me/profile/").status_code, 200)
+        self.assertEqual(self.client.get("/api/me/attendance/").status_code, 200)
+        self.assertEqual(self.client.get("/api/me/leave/").status_code, 200)
+
+    def test_announcements_are_unread_until_employee_opens_them(self):
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
+        created = self.client.post("/api/announcements/", {
+            "title": "Office update", "message": "The presentation starts at ten."
+        }, format="json")
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["read_count"], 0)
+
+        self.client.force_authenticate(employee.account.user)
+        inbox = self.client.get("/api/me/announcements/")
+        self.assertEqual(inbox.status_code, 200, inbox.data)
+        self.assertFalse(inbox.data[0]["is_read"])
+        opened = self.client.post(f'/api/me/announcements/{created.data["id"]}/read/', {}, format="json")
+        self.assertTrue(opened.data["is_read"])
+        self.assertEqual(AnnouncementRead.objects.filter(employee=employee).count(), 1)
+
+        self.client.force_authenticate(self.employer)
+        refreshed = self.client.get("/api/announcements/")
+        self.assertEqual(refreshed.data[0]["read_count"], 1)
+
+    def test_employee_can_view_company_calendar_event(self):
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
+        created = self.client.post("/api/calendar-events/", {
+            "title": "Quarterly presentation", "category": "presentation",
+            "date": "2026-10-12", "start_time": "14:30", "end_time": "15:45",
+            "description": "Present the quarterly results."
+        }, format="json")
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(CalendarEvent.objects.get().business, self.business)
+
+        self.client.force_authenticate(employee.account.user)
+        calendar = self.client.get("/api/me/calendar/")
+        self.assertEqual(calendar.status_code, 200, calendar.data)
+        self.assertEqual(calendar.data[0]["title"], "Quarterly presentation")
+        self.assertEqual(calendar.data[0]["start_time"], "14:30:00")
+        self.assertFalse(calendar.data[0]["is_read"])
+        opened = self.client.post(f'/api/me/calendar/{created.data["id"]}/read/', {}, format="json")
+        self.assertEqual(opened.status_code, 200, opened.data)
+        self.assertTrue(opened.data["is_read"])
+        self.assertEqual(CalendarEventRead.objects.filter(employee=employee).count(), 1)
+
+    def test_calendar_event_can_target_selected_employees(self):
+        self.hire()
+        invited = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(invited)
+        other = Employee.objects.create(
+            business=self.business, first_name="Not", last_name="Invited",
+            email="other@example.com", job_title="Designer", date_joined=timezone.localdate())
+        other_user = User.objects.create_user("other-worker", "other@example.com", self.password)
+        AccountProfile.objects.create(user=other_user, role="employee", employee=other)
+        self.signed_contract(other)
+
+        created = self.client.post("/api/calendar-events/", {
+            "title": "Selected team meeting", "category": "meeting", "date": "2026-10-13",
+            "start_time": "09:00", "end_time": "10:00", "all_employees": False,
+            "employee_ids": [invited.id],
+        }, format="json")
+        self.assertEqual(created.status_code, 201, created.data)
+
+        self.client.force_authenticate(invited.account.user)
+        self.assertEqual(len(self.client.get("/api/me/calendar/").data), 1)
+        self.client.force_authenticate(other_user)
+        self.assertEqual(self.client.get("/api/me/calendar/").data, [])
+
     def test_employee_checks_in_and_out_and_employer_sees_the_shift(self):
         self.hire()
         employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
         self.client.force_authenticate(employee.account.user)
         empty = self.client.get("/api/me/attendance/")
         self.assertEqual(empty.status_code, 200)
@@ -338,25 +447,123 @@ class EmployeeOnboardingTests(APITestCase):
         start = timezone.now().replace(hour=8, minute=0, second=0, microsecond=0)
         finish = start.replace(hour=16, minute=30)
         with patch("api.accounts.timezone.now", return_value=start):
-            checked_in = self.client.post("/api/me/attendance/", {"action": "check_in"}, format="json")
+            checked_in = self.client.post("/api/me/attendance/", {"action": "check_in", "time": "08:00"}, format="json")
         self.assertEqual(checked_in.status_code, 200, checked_in.data)
         self.assertIsNotNone(checked_in.data["attendance"]["check_in_at"])
         self.assertIsNone(checked_in.data["attendance"]["check_out_at"])
         self.assertEqual(self.client.post("/api/me/attendance/", {"action": "check_in"}, format="json").status_code, 400)
 
         with patch("api.accounts.timezone.now", return_value=finish):
-            checked_out = self.client.post("/api/me/attendance/", {"action": "check_out"}, format="json")
+            checked_out = self.client.post("/api/me/attendance/", {"action": "check_out", "time": "16:30"}, format="json")
         self.assertEqual(checked_out.status_code, 200, checked_out.data)
         self.assertEqual(checked_out.data["attendance"]["hours_worked"], "8.50")
         self.assertIsNotNone(checked_out.data["attendance"]["check_out_at"])
         self.assertEqual(self.client.post("/api/me/attendance/", {"action": "check_out"}, format="json").status_code, 400)
 
+        night_start = start.replace(hour=17)
+        night_finish = start.replace(hour=19)
+        with patch("api.accounts.timezone.now", return_value=night_start):
+            self.client.post("/api/me/attendance/", {"action": "check_in", "shift": "night", "time": "17:00"}, format="json")
+        with patch("api.accounts.timezone.now", return_value=night_finish):
+            night = self.client.post("/api/me/attendance/", {"action": "check_out", "shift": "night", "time": "19:00"}, format="json")
+        self.assertEqual(night.status_code, 200, night.data)
+        self.assertEqual(night.data["attendance"]["shift"], "night")
+        self.assertEqual(len(night.data["shifts"]), 2)
+        self.assertEqual(night.data["total_hours"], "10.50")
+
         self.client.force_authenticate(self.employer)
         employer_view = self.client.get("/api/attendance/")
         self.assertEqual(employer_view.status_code, 200)
-        self.assertEqual(len(employer_view.data), 1)
+        self.assertEqual(len(employer_view.data), 2)
         self.assertIsNotNone(employer_view.data[0]["check_in_at"])
         self.assertIsNotNone(employer_view.data[0]["check_out_at"])
+
+    def test_employee_requests_termination_and_employer_approves(self):
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        contract = Contract.objects.create(
+            employee=employee,
+            title="Employment contract",
+            start_date=timezone.localdate(),
+            status="active",
+            signature_status="signed",
+            worker_approval_status="approved",
+        )
+        last_day = timezone.localdate() + timedelta(days=14)
+        self.client.force_authenticate(employee.account.user)
+        requested = self.client.post(f"/api/me/contracts/{contract.pk}/termination/", {
+            "reason": "Moving to another city",
+            "proposed_last_working_date": last_day,
+        }, format="json")
+        self.assertEqual(requested.status_code, 201, requested.data)
+        self.assertEqual(requested.data["termination"]["status"], "pending")
+
+        self.client.force_authenticate(self.employer)
+        approved = self.client.post(f"/api/contracts/{contract.pk}/termination-decision/", {
+            "request_id": requested.data["termination"]["id"],
+            "decision": "approved",
+            "response_notes": "Agreed",
+        }, format="json")
+        self.assertEqual(approved.status_code, 200, approved.data)
+        self.assertEqual(approved.data["status"], "terminated_mutual")
+        self.assertEqual(approved.data["termination"]["status"], "approved")
+        self.assertEqual(Contract.objects.get(pk=contract.pk).end_date, last_day)
+
+    def test_employer_initiates_termination_and_employee_acknowledges(self):
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        contract = Contract.objects.create(
+            employee=employee,
+            title="Employment contract",
+            start_date=timezone.localdate(),
+            status="active",
+            signature_status="signed",
+            worker_approval_status="approved",
+        )
+        last_day = timezone.localdate() + timedelta(days=30)
+        initiated = self.client.post(f"/api/contracts/{contract.pk}/initiate-termination/", {
+            "reason": "Role is being discontinued",
+            "proposed_last_working_date": last_day,
+        }, format="json")
+        self.assertEqual(initiated.status_code, 201, initiated.data)
+        self.assertEqual(initiated.data["termination"]["status"], "awaiting_acknowledgement")
+
+        self.client.force_authenticate(employee.account.user)
+        acknowledged = self.client.post(f"/api/me/contracts/{contract.pk}/termination/acknowledge/", {}, format="json")
+        self.assertEqual(acknowledged.status_code, 200, acknowledged.data)
+        self.assertEqual(acknowledged.data["status"], "terminated_mutual")
+        self.assertEqual(acknowledged.data["termination"]["status"], "acknowledged")
+        self.assertEqual(Contract.objects.get(pk=contract.pk).end_date, last_day)
+
+    def test_night_shift_can_check_out_after_midnight(self):
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
+        self.client.force_authenticate(employee.account.user)
+        start = timezone.now().replace(hour=22, minute=0, second=0, microsecond=0)
+        finish = start + timedelta(hours=4)
+        Attendance.objects.create(
+            employee=employee,
+            date=timezone.localdate(start),
+            shift="day",
+            hours_worked="8.00",
+            check_in_at=start.replace(hour=8),
+            check_out_at=start.replace(hour=16),
+        )
+
+        with patch("api.accounts.timezone.now", return_value=start):
+            checked_in = self.client.post(
+                "/api/me/attendance/", {"action": "check_in", "shift": "night", "time": "22:00"}, format="json",
+            )
+        with patch("api.accounts.timezone.now", return_value=finish):
+            checked_out = self.client.post(
+                "/api/me/attendance/", {"action": "check_out", "shift": "night", "time": "02:00"}, format="json",
+            )
+
+        self.assertEqual(checked_in.status_code, 200, checked_in.data)
+        self.assertEqual(checked_out.status_code, 200, checked_out.data)
+        self.assertEqual(checked_out.data["attendance"]["hours_worked"], "4.00")
+        self.assertEqual(checked_out.data["date"], timezone.localdate(start))
 
     def test_account_identifies_signed_in_person_and_role(self):
         account = self.client.get("/api/account/")
@@ -372,6 +579,7 @@ class EmployeeOnboardingTests(APITestCase):
     def test_employee_requests_leave_and_employer_approval_updates_balance(self):
         self.hire()
         employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
         self.client.force_authenticate(employee.account.user)
         balances = self.client.get("/api/me/leave/")
         self.assertEqual(balances.status_code, 200, balances.data)
@@ -391,6 +599,14 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertEqual(requested.status_code, 201, requested.data)
         self.assertEqual(requested.data["status"], "pending")
         self.assertEqual(requested.data["days_requested"], 2)
+        self.assertEqual(mail.outbox[-1].to, ["boss@example.com"])
+
+        edited = self.client.patch(f'/api/me/leave/{requested.data["id"]}/', {
+            "reason": "Updated family trip",
+        }, format="json")
+        self.assertEqual(edited.status_code, 200, edited.data)
+        self.assertEqual(edited.data["reason"], "Updated family trip")
+        self.assertEqual(mail.outbox[-1].to, ["boss@example.com"])
 
         self.client.force_authenticate(self.employer)
         employer_requests = self.client.get("/api/leave/")
@@ -401,6 +617,7 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertEqual(approved.status_code, 200, approved.data)
         self.assertTrue(approved.data["decided_by"])
         self.assertIsNotNone(approved.data["decided_at"])
+        self.assertEqual(mail.outbox[-1].to, ["aline@example.com"])
 
         self.client.force_authenticate(employee.account.user)
         updated = self.client.get("/api/me/leave/")
@@ -443,7 +660,7 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertTrue(sent.data["notification"]["email_sent"])
         self.assertIsNotNone(sent.data["notification_sent_at"])
         self.assertEqual(mail.outbox[0].to, ["aline@example.com"])
-        self.assertIn(f"/account?contract={contract_id}#contracts", mail.outbox[0].body)
+        self.assertIn(f"/MyAccount/contract?contract={contract_id}", mail.outbox[0].body)
         resent = self.client.post(f"/api/contracts/{contract_id}/resend-signature-email/", {}, format="json")
         self.assertEqual(resent.status_code, 200, resent.data)
         self.assertTrue(resent.data["email_sent"])
@@ -474,8 +691,11 @@ class EmployeeOnboardingTests(APITestCase):
         }, format="json")
         self.assertEqual(signed.status_code, 200, signed.data)
         self.assertEqual(signed.data["signature_status"], "signed")
+        self.assertEqual(signed.data["worker_approval_status"], "pending")
         self.assertEqual(signed.data["signer_name"], "Aline Uwase")
         self.assertIsNotNone(signed.data["signed_at"])
+        self.assertEqual(mail.outbox[-1].to, ["boss@example.com"])
+        self.assertIn("Approve Aline Uwase", mail.outbox[-1].subject)
         self.assertEqual(self.client.post(f"/api/me/contracts/{other_contract.pk}/sign/", {
             "signer_name": "Aline Uwase", "signature_data": signature, "accepted": True,
         }, format="json").status_code, 403)
@@ -484,6 +704,11 @@ class EmployeeOnboardingTests(APITestCase):
         }, format="json").status_code, 400)
 
         self.client.force_authenticate(self.employer)
+        approved = self.client.post(f"/api/contracts/{contract_id}/approve-worker/", {}, format="json")
+        self.assertEqual(approved.status_code, 200, approved.data)
+        self.assertEqual(approved.data["worker_approval_status"], "approved")
+        self.assertEqual(mail.outbox[-1].to, ["aline@example.com"])
+        self.assertIn("Congratulations", mail.outbox[-1].subject)
         correction = self.client.post(f"/api/contracts/{contract_id}/request-new-signature/", {
             "message": "Please sign again using your complete legal name.",
         }, format="json")
@@ -532,6 +757,7 @@ class EmployeeOnboardingTests(APITestCase):
     def test_employee_completes_personal_details_but_not_job_details(self):
         self.hire()
         employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
         self.client.force_authenticate(employee.account.user)
 
         profile = self.client.get("/api/me/profile/")

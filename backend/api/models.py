@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -113,16 +114,22 @@ class Contract(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="contracts")
     revision_of = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="revisions")
     title = models.CharField(max_length=200)
+    department = models.CharField(max_length=100, blank=True)
     start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=20, default="active", choices=[
-        ("draft", "Draft"), ("active", "Active"), ("ended", "Ended")])
+        ("draft", "Draft"), ("active", "Active"), ("ended", "Ended"),
+        ("terminated_mutual", "Terminated by Mutual Agreement")])
     terms = models.TextField(blank=True)
     content = models.TextField(blank=True)
     document = models.FileField(upload_to=contract_path, blank=True,
         validators=[FileExtensionValidator(["pdf", "doc", "docx"])])
     signature_status = models.CharField(max_length=20, default="draft", choices=[
         ("draft", "Draft"), ("sent", "Awaiting signature"), ("signed", "Signed")])
+    worker_approval_status = models.CharField(max_length=20, default="pending", choices=[
+        ("pending", "Awaiting employer approval"), ("approved", "Approved to start work")])
+    worker_approved_at = models.DateTimeField(null=True, blank=True)
+    worker_approved_by = models.CharField(max_length=200, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     notification_sent_at = models.DateTimeField(null=True, blank=True)
     employer_message = models.TextField(blank=True)
@@ -134,9 +141,28 @@ class Contract(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
+class ContractTerminationRequest(models.Model):
+    contract = models.ForeignKey(Contract, on_delete=models.PROTECT, related_name="termination_requests")
+    initiated_by = models.CharField(max_length=20, choices=[("employee", "Employee"), ("employer", "Employer")])
+    reason = models.TextField()
+    proposed_last_working_date = models.DateField()
+    status = models.CharField(max_length=30, default="pending", choices=[
+        ("pending", "Awaiting employer review"),
+        ("awaiting_acknowledgement", "Awaiting employee acknowledgement"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+        ("acknowledged", "Acknowledged"),
+    ])
+    response_notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+
 class Attendance(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="attendance")
     date = models.DateField()
+    shift = models.CharField(max_length=20, default="day", choices=[
+        ("day", "Day"), ("night", "Night")])
     status = models.CharField(max_length=20, default="present", choices=[
         ("present", "Present"), ("remote", "Remote"), ("absent", "Absent")])
     hours_worked = models.DecimalField(max_digits=4, decimal_places=2, default=0,
@@ -146,7 +172,7 @@ class Attendance(models.Model):
     notes = models.TextField(blank=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["employee", "date"], name="unique_employee_attendance")]
+        constraints = [models.UniqueConstraint(fields=["employee", "date", "shift"], name="unique_employee_attendance_shift")]
 
 
 class LeaveRequest(models.Model):
@@ -190,6 +216,58 @@ class Holiday(models.Model):
             models.UniqueConstraint(fields=["business", "date"], name="unique_business_holiday_date"),
             models.UniqueConstraint(fields=["date"], condition=models.Q(business__isnull=True), name="unique_legacy_holiday_date"),
         ]
+
+
+class Announcement(models.Model):
+    business = models.ForeignKey(Business, on_delete=models.CASCADE, related_name="announcements")
+    title = models.CharField(max_length=200)
+    message = models.TextField()
+    created_by = models.CharField(max_length=200, blank=True)
+    published_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-published_at", "-id"]
+
+
+class AnnouncementRead(models.Model):
+    announcement = models.ForeignKey(Announcement, on_delete=models.CASCADE, related_name="reads")
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="announcement_reads")
+    read_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["announcement", "employee"], name="unique_employee_announcement_read")]
+
+
+class CalendarEvent(models.Model):
+    business = models.ForeignKey(Business, on_delete=models.CASCADE, related_name="calendar_events")
+    all_employees = models.BooleanField(default=True)
+    invited_employees = models.ManyToManyField(Employee, blank=True, related_name="calendar_events")
+    title = models.CharField(max_length=200)
+    category = models.CharField(max_length=30, default="other", choices=[
+        ("holiday", "Holiday"), ("presentation", "Presentation"),
+        ("meeting", "Meeting"), ("training", "Training"), ("other", "Other")])
+    date = models.DateField()
+    end_date = models.DateField(null=True, blank=True)
+    start_time = models.TimeField(default=time(9, 0))
+    end_time = models.TimeField(default=time(10, 0))
+    location = models.CharField(max_length=250, blank=True)
+    description = models.TextField(blank=True)
+    created_by = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["date", "id"]
+
+
+class CalendarEventRead(models.Model):
+    event = models.ForeignKey(CalendarEvent, on_delete=models.CASCADE, related_name="reads")
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="calendar_event_reads")
+    read_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["event", "employee"], name="unique_employee_calendar_event_read")]
 
 
 class Salary(models.Model):

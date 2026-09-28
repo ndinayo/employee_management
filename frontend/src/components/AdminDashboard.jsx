@@ -5,6 +5,7 @@ import {
   fetchAdminEmployers, fetchAdminOverview, saveAdminEmployee, saveAdminEmployer,
 } from "../api";
 import ModalDialog from "./ModalDialog";
+import { useConfirm } from "./ConfirmDialog";
 
 function whenCreated(value) {
   if (!value) return "Never";
@@ -18,12 +19,12 @@ function whenCreated(value) {
 const emptyEmployer = { username: "", email: "", password: "", business_name: "" };
 const emptyEmployee = { business: "", first_name: "", last_name: "", job_title: "", email: "" };
 
-function Table({ columns, rows, empty, actions }) {
+function Table({ columns, rows, empty, actions, rowClassName }) {
   if (!rows.length) return <p className="empty-state">{empty}</p>;
   return <div className="table-scroll"><table>
     <thead><tr>{columns.map((column) => <th key={column.title} scope="col">{column.title}</th>)}{actions && <th scope="col">Actions</th>}</tr></thead>
-    <tbody>{rows.map((row) => <tr key={row.id}>
-      {columns.map((column) => <td key={column.title}>{column.value(row) || "—"}</td>)}
+    <tbody>{rows.map((row) => <tr key={row.id} className={rowClassName?.(row) || undefined}>
+      {columns.map((column) => <td key={column.title}>{column.value(row) || "Not recorded"}</td>)}
       {actions && <td><div className="row-actions">{actions(row)}</div></td>}
     </tr>)}</tbody>
   </table></div>;
@@ -65,6 +66,7 @@ function EmployersPage({ token, onAuthError }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [confirm, confirmation] = useConfirm();
 
   function load() {
     fetchAdminEmployers(token).then(setRows).catch((err) => { setError(err.message); onAuthError(err); });
@@ -94,7 +96,7 @@ function EmployersPage({ token, onAuthError }) {
   }
 
   async function setActive(row, isActive) {
-    if (isActive === false && !window.confirm(`Deactivate ${row.business_name}? ${row.username} will not be able to sign in until you activate them again. Their employees stay in place.`)) return;
+    if (isActive === false && !await confirm({ title: "Deactivate employer?", message: `Deactivate ${row.business_name}? ${row.username} will not be able to sign in until you activate them again. Their employees stay in place.`, confirmLabel: "Deactivate" })) return;
     setBusy(true); setError(""); setNotice("");
     try {
       await saveAdminEmployer(token, { is_active: isActive }, row.id);
@@ -105,7 +107,7 @@ function EmployersPage({ token, onAuthError }) {
   }
 
   async function remove(row) {
-    if (!window.confirm(`Permanently delete ${row.business_name} and every employee in that workspace?`)) return;
+    if (!await confirm({ title: "Delete employer workspace?", message: `Permanently delete ${row.business_name} and every employee in that workspace?`, confirmLabel: "Delete permanently" })) return;
     setBusy(true); setError("");
     try {
       await deleteAdminEmployer(token, row.id);
@@ -160,6 +162,7 @@ function EmployersPage({ token, onAuthError }) {
         </>}
       />}
     </section>
+    {confirmation}
   </>;
 }
 
@@ -171,6 +174,7 @@ function EmployeesPage({ token, onAuthError }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [confirm, confirmation] = useConfirm();
 
   function load() {
     Promise.all([fetchAdminEmployees(token), fetchAdminBusinesses(token)]).then(([people, companies]) => {
@@ -203,7 +207,7 @@ function EmployeesPage({ token, onAuthError }) {
   }
 
   async function remove(row) {
-    if (!window.confirm(`Permanently delete ${row.first_name} ${row.last_name} and their sign-in account?`)) return;
+    if (!await confirm({ title: "Delete employee permanently?", message: `Permanently delete ${row.first_name} ${row.last_name} and their sign-in account?`, confirmLabel: "Delete permanently" })) return;
     setBusy(true); setError("");
     try {
       await deleteAdminEmployee(token, row.id);
@@ -218,6 +222,7 @@ function EmployeesPage({ token, onAuthError }) {
     <div className="section-heading"><div><p className="eyebrow dark-eyebrow">PLATFORM</p><h2>Employees</h2><p>Hire someone into any business. Their employer will also see them in that workspace.</p></div><button className="button button-coral" type="button" disabled={busy || !businesses.length} onClick={() => open()}>+ Add employee</button></div>
     {error && <p className="message error" role="alert">{error}</p>}
     {notice && <p className="message success" role="status">{notice}</p>}
+    {rows?.some((row) => row.account_status === "pending_first_sign_in") && <div className="attention-banner" role="status"><span className="attention-badge">{rows.filter((row) => row.account_status === "pending_first_sign_in").length}</span><div><strong>Employees are awaiting their first sign-in</strong><p>The highlighted employee accounts have been invited but have not completed activation.</p></div></div>}
     {!businesses.length && rows && <p className="message">Create an employer workspace before adding employees.</p>}
     {form && <ModalDialog title={editing ? "Edit employee" : "Add employee"} onClose={() => { setForm(null); setEditing(null); }}><form className="record-form" onSubmit={submit}>
       <h3>{editing ? "Edit employee" : "Add employee"}</h3>
@@ -247,14 +252,26 @@ function EmployeesPage({ token, onAuthError }) {
           { title: "Status", value: (row) => row.is_active ? "Active" : "Inactive" },
         ]}
         rows={rows}
+        rowClassName={(row) => row.account_status === "pending_first_sign_in" ? "attention-row" : ""}
         empty="No employees on the platform yet."
         actions={(row) => <><button type="button" disabled={busy} onClick={() => open(row)}>Edit</button><button type="button" disabled={busy} className="danger-link" onClick={() => remove(row)}>Delete</button></>}
       />}
     </section>
+    {confirmation}
   </>;
 }
 
 export default function AdminDashboard({ token, account, onLogout, onAuthError }) {
+  const [attention, setAttention] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => fetchAdminOverview(token).then((data) => {
+      if (!cancelled) setAttention(data);
+    }).catch((err) => onAuthError(err));
+    refresh();
+    const timer = window.setInterval(refresh, 15000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [token, onAuthError]);
   return <>
     <aside className="dashboard-sidebar" aria-label="Admin menu">
       <Link className="brand" to="/"><span className="brand-mark">E</span><span>Employee<span className="brand-dot">.</span></span></Link>
@@ -263,7 +280,7 @@ export default function AdminDashboard({ token, account, onLogout, onAuthError }
       <nav className="sidebar-nav" aria-label="Admin navigation">
         <NavLink end to="/admin" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Overview</NavLink>
         <NavLink to="/admin/employers" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Employers</NavLink>
-        <NavLink to="/admin/employees" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Employees</NavLink>
+        <NavLink to="/admin/employees" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}><span>Employees</span>{attention?.invited_employees > 0 && <span className="attention-badge" aria-label={`${attention.invited_employees} employees awaiting first sign-in`}>{attention.invited_employees}</span>}</NavLink>
       </nav>
       <div className="sidebar-bottom">
         <p className="sidebar-label">{account?.email}</p>

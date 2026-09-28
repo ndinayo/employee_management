@@ -14,10 +14,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import leave_management, onboarding
-from .models import AccountProfile, Employee, Contract, Attendance, LeaveBalance, LeaveRequest, Holiday, Salary, Payroll
+from .models import (AccountProfile, Employee, Contract, ContractTerminationRequest,
+                     Attendance, LeaveBalance, LeaveRequest, Holiday, Announcement,
+                     CalendarEvent, Salary, Payroll)
 from .permissions import IsManager, business_id_for
 from .serializers import (EmployeeSerializer, ContractSerializer, AttendanceSerializer,
                           LeaveBalanceSerializer, LeaveSerializer, HolidaySerializer,
+                          AnnouncementSerializer, CalendarEventSerializer,
                           SalarySerializer, PayrollSerializer)
 
 
@@ -26,12 +29,15 @@ class ManagerViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        field = "business_id" if queryset.model in (Employee, Holiday) else "employee__business_id"
+        field = "business_id" if queryset.model in (Employee, Holiday, Announcement, CalendarEvent) else "employee__business_id"
         return queryset.filter(**{field: business_id_for(self.request.user)})
 
     def perform_create(self, serializer):
-        if serializer.Meta.model in (Employee, Holiday):
-            serializer.save(business_id=business_id_for(self.request.user))
+        if serializer.Meta.model in (Employee, Holiday, Announcement, CalendarEvent):
+            extra = {"business_id": business_id_for(self.request.user)}
+            if serializer.Meta.model in (Announcement, CalendarEvent):
+                extra["created_by"] = self.request.user.get_full_name().strip() or self.request.user.username
+            serializer.save(**extra)
         else:
             serializer.save()
 
@@ -67,6 +73,17 @@ class EmployeeViewSet(ManagerViewSet):
 
 class ContractMessageSerializer(serializers.Serializer):
     message = serializers.CharField(max_length=2000, required=False, allow_blank=True, trim_whitespace=True)
+
+
+class ContractTerminationInputSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=4000, trim_whitespace=True)
+    proposed_last_working_date = serializers.DateField()
+
+
+class ContractTerminationDecisionSerializer(serializers.Serializer):
+    request_id = serializers.IntegerField()
+    decision = serializers.ChoiceField(choices=["approved", "rejected"])
+    response_notes = serializers.CharField(max_length=4000, required=False, allow_blank=True, trim_whitespace=True)
 
 
 class ContractViewSet(ManagerViewSet):
@@ -144,6 +161,7 @@ class ContractViewSet(ManagerViewSet):
                 revision_of=original,
                 employer_message=message,
                 title=original.title,
+                department=original.department,
                 start_date=original.start_date,
                 end_date=original.end_date,
                 status=original.status,
@@ -165,6 +183,72 @@ class ContractViewSet(ManagerViewSet):
                        "The new signing request is in the employee dashboard, but its email could not be sent."),
         }
         return Response(data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="approve-worker")
+    def approve_worker(self, request, pk=None):
+        with transaction.atomic():
+            contract = Contract.objects.select_for_update().get(pk=self.get_object().pk)
+            if contract.signature_status != "signed":
+                raise serializers.ValidationError("The employee must sign this contract before approval.")
+            if contract.status != "active":
+                raise serializers.ValidationError("Only an active contract can approve a worker.")
+            if contract.worker_approval_status == "approved":
+                raise serializers.ValidationError("This worker has already been approved.")
+            contract.worker_approval_status = "approved"
+            contract.worker_approved_at = timezone.now()
+            contract.worker_approved_by = request.user.get_full_name().strip() or request.user.username
+            contract.save(update_fields=["worker_approval_status", "worker_approved_at", "worker_approved_by"])
+        emailed = onboarding.send_contract_worker_approval_notification(contract, "approved")
+        data = self.get_serializer(contract).data
+        data["notification"] = {
+            "email_sent": emailed,
+            "detail": (f"{contract.employee} was approved and received a congratulations email." if emailed else
+                       f"{contract.employee} was approved, but the congratulations email could not be sent."),
+        }
+        return Response(data)
+
+    @action(detail=True, methods=["post"], url_path="initiate-termination")
+    def initiate_termination(self, request, pk=None):
+        payload = ContractTerminationInputSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        with transaction.atomic():
+            contract = Contract.objects.select_for_update().get(pk=self.get_object().pk)
+            if contract.signature_status != "signed" or contract.worker_approval_status != "approved" or contract.status != "active":
+                raise serializers.ValidationError("Only an active signed contract can be terminated.")
+            if payload.validated_data["proposed_last_working_date"] < timezone.localdate():
+                raise serializers.ValidationError({"proposed_last_working_date": "Choose today or a future date."})
+            if contract.termination_requests.filter(status__in=["pending", "awaiting_acknowledgement"]).exists():
+                raise serializers.ValidationError("This contract already has a pending termination request.")
+            termination = ContractTerminationRequest.objects.create(
+                contract=contract,
+                initiated_by="employer",
+                status="awaiting_acknowledgement",
+                **payload.validated_data,
+            )
+        onboarding.send_contract_termination_notification(termination, "employer_initiated")
+        return Response(self.get_serializer(contract).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="termination-decision")
+    def termination_decision(self, request, pk=None):
+        payload = ContractTerminationDecisionSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        with transaction.atomic():
+            contract = Contract.objects.select_for_update().get(pk=self.get_object().pk)
+            termination = contract.termination_requests.select_for_update().filter(
+                pk=payload.validated_data["request_id"], initiated_by="employee", status="pending",
+            ).first()
+            if not termination:
+                raise serializers.ValidationError("This employee termination request is no longer pending.")
+            termination.status = payload.validated_data["decision"]
+            termination.response_notes = payload.validated_data.get("response_notes", "")
+            termination.responded_at = timezone.now()
+            termination.save(update_fields=["status", "response_notes", "responded_at"])
+            if termination.status == "approved":
+                contract.status = "terminated_mutual"
+                contract.end_date = termination.proposed_last_working_date
+                contract.save(update_fields=["status", "end_date"])
+        onboarding.send_contract_termination_notification(termination, f"employer_{termination.status}")
+        return Response(self.get_serializer(contract).data)
 
     @action(detail=True, methods=["get"])
     def document(self, request, pk=None):
@@ -202,6 +286,22 @@ class LeaveViewSet(ManagerViewSet):
     queryset = LeaveRequest.objects.select_related("employee").order_by("-start_date", "-id")
     serializer_class = LeaveSerializer
 
+    def create(self, request, *args, **kwargs):
+        raise serializers.ValidationError({
+            "employee": "Employers cannot create employee leave requests. The employee must submit the request."
+        })
+
+    def destroy(self, request, *args, **kwargs):
+        self.get_object()
+        raise serializers.ValidationError(
+            "Employers cannot delete employee leave requests. They may only approve or reject them.")
+
+    def perform_update(self, serializer):
+        previous_status = serializer.instance.status
+        leave = serializer.save()
+        if leave.status in {"approved", "rejected"} and leave.status != previous_status:
+            onboarding.send_leave_notification(leave, leave.status)
+
 
 class LeaveBalanceViewSet(ManagerViewSet):
     queryset = LeaveBalance.objects.select_related("employee").order_by(
@@ -219,6 +319,16 @@ class LeaveBalanceViewSet(ManagerViewSet):
 class HolidayViewSet(ManagerViewSet):
     queryset = Holiday.objects.order_by("-date", "-id")
     serializer_class = HolidaySerializer
+
+
+class AnnouncementViewSet(ManagerViewSet):
+    queryset = Announcement.objects.prefetch_related("reads").all()
+    serializer_class = AnnouncementSerializer
+
+
+class CalendarEventViewSet(ManagerViewSet):
+    queryset = CalendarEvent.objects.all()
+    serializer_class = CalendarEventSerializer
 
 
 class SalaryViewSet(ManagerViewSet):
@@ -307,7 +417,7 @@ class ManagerReportsView(APIView):
             "date": date, "contract_window_end": until, "month_start": month_start,
             "working_day": working_day, "active_employees": employees.count(),
             "departments": employees.values("department").distinct().count(),
-            "present_count": attendance.filter(status__in=["present", "remote"]).count(),
+            "present_count": attendance.filter(status__in=["present", "remote"]).values("employee_id").distinct().count(),
             "pending_leave_count": LeaveRequest.objects.filter(employee__in=business_employees, status="pending").count(),
             "absent": AttendanceSerializer(attendance.filter(status="absent"), many=True).data,
             "on_leave": LeaveSerializer(on_leave, many=True).data,

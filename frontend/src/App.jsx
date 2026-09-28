@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import heroImage from "./assets/images/hero.jpeg";
-import { ACCESS_TOKEN } from "./constants";
+import { ACCESS_TOKEN, REFRESH_TOKEN } from "./constants";
 import { fetchAccount } from "./api";
 import AuthForm from "./AuthForm";
 import EmployeeWorkspace from "./components/EmployeeWorkspace";
@@ -13,8 +13,8 @@ import { workspacePath } from "./workspace";
 import "./App.css";
 import "./ManagerDashboard.css";
 
-// Shared site chrome. The public pages and the employee account page use the
-// same header and footer; the manager dashboard keeps its own sidebar layout.
+// Shared site chrome for public and password-reset pages. Signed-in workspaces
+// use their own sidebar navigation.
 export function SiteHeader({ token, workspacePath, onLogout, onAuthenticate, home = false }) {
   // The header is pinned, so it needs a solid backing wherever its white text
   // is not sitting over the dark hero photo.
@@ -39,7 +39,7 @@ export function SiteHeader({ token, workspacePath, onLogout, onAuthenticate, hom
           <nav className="site-nav" aria-label="Main navigation">
             <Link to="/">Home</Link>
             {home ? <a href="#about">About</a> : <Link to="/#about">About</Link>}
-            {token && <Link to={workspacePath}>My workspace</Link>}
+            {token && <Link to={workspacePath}>My Account</Link>}
             {token && <button type="button" className="nav-signout" onClick={onLogout}>Sign out</button>}
           </nav>
 
@@ -196,6 +196,7 @@ function App() {
 
   const handleLogout = useCallback(() => {
     localStorage.removeItem(ACCESS_TOKEN);
+    localStorage.removeItem(REFRESH_TOKEN);
     setToken(null);
     setAccount(null);
     setError("");
@@ -206,6 +207,15 @@ function App() {
       handleLogout();
       setError("Your session has ended. Please sign in again.");
     }
+  }, [handleLogout]);
+
+  useEffect(() => {
+    const expired = () => {
+      handleLogout();
+      setError("Your session has ended. Please sign in again.");
+    };
+    window.addEventListener("auth:expired", expired);
+    return () => window.removeEventListener("auth:expired", expired);
   }, [handleLogout]);
 
   useEffect(() => {
@@ -222,14 +232,16 @@ function App() {
     return () => { cancelled = true; };
   }, [token, retry, handleAuthError]);
 
-  function handleAuthenticated(access, profile) {
+  function handleAuthenticated(access, profile, refresh) {
     localStorage.setItem(ACCESS_TOKEN, access);
+    if (refresh) localStorage.setItem(REFRESH_TOKEN, refresh);
     setAccount(profile);
     setToken(access);
     setError("");
     const destination = sessionStorage.getItem("employeeSignInDestination");
     sessionStorage.removeItem("employeeSignInDestination");
-    navigate(!profile.can_manage && !profile.can_admin && destination?.startsWith("/account")
+    navigate(!profile.can_manage && !profile.can_admin && destination?.startsWith("/MyAccount")
+      && (profile.workspace_approved || destination.toLowerCase().startsWith("/myaccount/contract"))
       ? destination
       : workspacePath(profile));
   }
@@ -249,9 +261,9 @@ function App() {
     <Route path="/" element={<HomePage token={token} account={account} onAuthenticated={handleAuthenticated} onLogout={handleLogout} error={error} />} />
     <Route path="/forgot-password" element={withSiteChrome(<ForgotPasswordPage />)} />
     <Route path="/reset-password" element={withSiteChrome(<ResetPasswordPage />)} />
-    <Route path="/account" element={!token ? <RememberEmployeeDestination /> : !account ? withSiteChrome(pendingAccount) : account.can_admin ? <Navigate to="/admin" replace /> : withSiteChrome(<EmployeeWorkspace account={account} token={token} onAccountChange={handleAuthenticated} />)} />
-    <Route path="/dashboard/*" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : account.can_admin ? <Navigate to="/admin" replace /> : account.can_manage ? <EmployerWorkspace token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} onAccountChange={(partial) => setAccount((current) => current ? { ...current, ...partial } : current)} /> : <Navigate to="/account" replace />} />
-    <Route path="/admin/*" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : account.can_admin ? <AdminDashboard token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} /> : <Navigate to={workspacePath(account)} replace />} />
+    <Route path="/MyAccount/*" element={!token ? <RememberEmployeeDestination /> : !account ? withSiteChrome(pendingAccount) : account.can_admin ? <Navigate to="/admin" replace /> : <EmployeeWorkspace account={account} token={token} onAccountChange={handleAuthenticated} onLogout={handleLogout} />} />
+    <Route path="/dashboard/*" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : account.can_admin ? <Navigate to="/admin" replace /> : account.can_manage ? <EmployerWorkspace token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} onAccountChange={(partial) => setAccount((current) => current ? { ...current, ...partial } : current)} /> : <Navigate to="/MyAccount" replace />} />
+    <Route path="/dashboard/*" element={!token ? <Navigate to="/#sign-in" replace /> : !account ? pendingAccount : account.can_admin ? <AdminDashboard token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} /> : <Navigate to={workspacePath(account)} replace />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>;
 }

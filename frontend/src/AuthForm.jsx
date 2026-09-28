@@ -35,7 +35,7 @@ export default function AuthForm({ onAuthenticated, initialMode = "signin" }) {
         ? await signupUser({ ...fields, business_name: fields.role === "employer" ? fields.business_name : "" })
         : await loginUser(fields.username, fields.password);
       const account = result.user || await fetchAccount(result.access);
-      onAuthenticated(result.access, account);
+      onAuthenticated(result.access, account, result.refresh);
     } catch (err) {
       setError(!signup && err.status === 401
         ? "Those sign-in details are incorrect. Check your invitation email, or choose Create account if you are new here."
@@ -73,7 +73,7 @@ export default function AuthForm({ onAuthenticated, initialMode = "signin" }) {
       </>}
       <label htmlFor="username">{signup ? "Username" : "Username or email"}</label>
       <input id="username" name="username" value={fields.username} onChange={update} autoComplete="username" maxLength={254} required />
-      {!signup && <p className="auth-hint">Added to a team by your employer? Sign in with the email and temporary password they sent you — there is no need to create an account.</p>}
+      {!signup && <p className="auth-hint">Added to a team by your employer? Sign in with the email and temporary password they sent you. There is no need to create an account.</p>}
       <label htmlFor="password">Password</label>
       <input id="password" name="password" type="password" value={fields.password} onChange={update} autoComplete={signup ? "new-password" : "current-password"} maxLength={128} minLength={signup ? 8 : undefined} aria-describedby={signup ? "password-hint" : undefined} required />
       {!signup && <Link className="forgot-password-link" to="/forgot-password">Forgot password?</Link>}

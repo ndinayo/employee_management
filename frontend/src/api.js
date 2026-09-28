@@ -1,13 +1,42 @@
+import { ACCESS_TOKEN, REFRESH_TOKEN } from "./constants";
+
 // Development requests use Vite's API proxy; deployments can set VITE_API_URL.
 const API_URL = (
   import.meta.env.DEV ? "" : import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 ).replace(/\/$/, "");
 
+let refreshPromise = null;
+
+async function refreshAccessToken() {
+  const refresh = localStorage.getItem(REFRESH_TOKEN);
+  if (!refresh) return null;
+  if (!refreshPromise) {
+    refreshPromise = fetch(`${API_URL}/api/token/refresh/`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh }),
+    }).then(async (response) => {
+      if (!response.ok) return null;
+      const result = await response.json();
+      if (result.access) localStorage.setItem(ACCESS_TOKEN, result.access);
+      if (result.refresh) localStorage.setItem(REFRESH_TOKEN, result.refresh);
+      return result.access || null;
+    }).catch(() => null).finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+}
+
+function expireSession() {
+  localStorage.removeItem(ACCESS_TOKEN);
+  localStorage.removeItem(REFRESH_TOKEN);
+  window.dispatchEvent(new Event("auth:expired"));
+}
+
 async function request(path, { method = "GET", token, body, download = false } = {}) {
   const headers = { Accept: "application/json" };
 
   if (token) {
-    headers.Authorization = `Bearer ${token}`;
+    headers.Authorization = `Bearer ${localStorage.getItem(ACCESS_TOKEN) || token}`;
   }
 
   const isForm = body instanceof FormData;
@@ -20,12 +49,23 @@ async function request(path, { method = "GET", token, body, download = false } =
   const timeout = setTimeout(() => controller.abort(), 60000);
 
   try {
-    response = await fetch(`${API_URL}${path}`, {
+    const options = {
       method,
       headers,
       body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
       signal: controller.signal,
-    });
+    };
+    response = await fetch(`${API_URL}${path}`, options);
+    if (response.status === 401 && token) {
+      const renewed = await refreshAccessToken();
+      if (renewed) {
+        headers.Authorization = `Bearer ${renewed}`;
+        response = await fetch(`${API_URL}${path}`, options);
+        if (response.status === 401) expireSession();
+      } else {
+        expireSession();
+      }
+    }
   } catch (error) {
     throw new Error(error.name === "AbortError"
       ? "The server is taking too long to respond. Please try again shortly."
@@ -41,7 +81,11 @@ async function request(path, { method = "GET", token, body, download = false } =
     : await response.json().catch(() => null);
 
   if (!response.ok) {
-    const flatten = (value) => Array.isArray(value) ? value.map(flatten).join(" ") : String(value ?? "");
+    const flatten = (value) => Array.isArray(value)
+      ? value.map(flatten).join(" ")
+      : value && typeof value === "object"
+        ? Object.values(value).map(flatten).join(" ")
+        : String(value ?? "");
     // "detail" and "non_field_errors" are whole sentences already; anything else
     // is a field name worth showing next to its message.
     const bare = new Set(["detail", "non_field_errors"]);
@@ -127,6 +171,10 @@ export function requestNewContractSignature(token, id, body) {
   return request(`/api/contracts/${id}/request-new-signature/`, { method: "POST", token, body });
 }
 
+export function approveContractWorker(token, id) {
+  return request(`/api/contracts/${id}/approve-worker/`, { method: "POST", token });
+}
+
 export function signupUser(account) {
   return request("/api/signup/", { method: "POST", body: account });
 }
@@ -179,8 +227,8 @@ export function fetchMyAttendance(token) {
   return request("/api/me/attendance/", { token });
 }
 
-export function clockMyAttendance(token, action) {
-  return request("/api/me/attendance/", { method: "POST", token, body: { action } });
+export function clockMyAttendance(token, action, shift = "day", time) {
+  return request("/api/me/attendance/", { method: "POST", token, body: { action, shift, time } });
 }
 
 export function fetchMyLeave(token) {
@@ -191,6 +239,10 @@ export function submitMyLeave(token, body) {
   return request("/api/me/leave/", { method: "POST", token, body });
 }
 
+export function updateMyLeave(token, id, body) {
+  return request(`/api/me/leave/${id}/`, { method: "PATCH", token, body });
+}
+
 export function cancelMyLeave(token, id) {
   return request(`/api/me/leave/${id}/`, { method: "DELETE", token });
 }
@@ -199,8 +251,40 @@ export function fetchMyContracts(token) {
   return request("/api/me/contracts/", { token });
 }
 
+export function fetchMyAnnouncements(token) {
+  return request("/api/me/announcements/", { token });
+}
+
+export function markMyAnnouncementRead(token, id) {
+  return request(`/api/me/announcements/${id}/read/`, { method: "POST", token });
+}
+
+export function fetchMyCalendar(token) {
+  return request("/api/me/calendar/", { token });
+}
+
+export function markMyCalendarEventRead(token, id) {
+  return request(`/api/me/calendar/${id}/read/`, { method: "POST", token });
+}
+
 export function signMyContract(token, id, body) {
   return request(`/api/me/contracts/${id}/sign/`, { method: "POST", token, body });
+}
+
+export function requestMyContractTermination(token, id, body) {
+  return request(`/api/me/contracts/${id}/termination/`, { method: "POST", token, body });
+}
+
+export function acknowledgeMyContractTermination(token, id) {
+  return request(`/api/me/contracts/${id}/termination/acknowledge/`, { method: "POST", token });
+}
+
+export function initiateContractTermination(token, id, body) {
+  return request(`/api/contracts/${id}/initiate-termination/`, { method: "POST", token, body });
+}
+
+export function decideContractTermination(token, id, body) {
+  return request(`/api/contracts/${id}/termination-decision/`, { method: "POST", token, body });
 }
 
 export function fetchAdminOverview(token) {

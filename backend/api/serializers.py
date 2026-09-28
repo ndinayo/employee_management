@@ -6,7 +6,9 @@ from django.utils import timezone
 
 from . import leave_management, onboarding
 from .contract_content import sanitize_contract_html
-from .models import Employee, Contract, Attendance, LeaveBalance, LeaveRequest, Holiday, Salary, Payroll
+from .models import (Employee, Contract, ContractTerminationRequest, Attendance,
+                     LeaveBalance, LeaveRequest, Holiday, Announcement,
+                     CalendarEvent, Salary, Payroll)
 from .permissions import business_id_for
 
 
@@ -81,7 +83,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
         """
         contract = ContractSerializer(context=self.context, data={
             "employee": employee.pk, "title": title or "Employment contract",
-            "start_date": employee.date_joined, "status": "active", "document": document,
+            "department": employee.department, "start_date": employee.date_joined,
+            "status": "active", "document": document,
         })
         contract.is_valid(raise_exception=True)
         contract.save()
@@ -177,13 +180,27 @@ class ManagerRecordSerializer(serializers.ModelSerializer):
         return value
 
 
+class ContractTerminationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContractTerminationRequest
+        fields = [
+            "id", "initiated_by", "reason", "proposed_last_working_date", "status",
+            "response_notes", "created_at", "responded_at",
+        ]
+
+
 class ContractSerializer(ManagerRecordSerializer):
     document = serializers.FileField(write_only=True, required=False)
     document_name = serializers.SerializerMethodField()
     employee_email = serializers.EmailField(source="employee.email", read_only=True)
+    termination = serializers.SerializerMethodField()
 
     def get_document_name(self, obj):
         return obj.document.name.rsplit("/", 1)[-1] if obj.document else ""
+
+    def get_termination(self, obj):
+        request = obj.termination_requests.order_by("-created_at", "-id").first()
+        return ContractTerminationSerializer(request).data if request else None
 
     def validate_document(self, value):
         from django.core.validators import FileExtensionValidator
@@ -204,20 +221,38 @@ class ContractSerializer(ManagerRecordSerializer):
             raise serializers.ValidationError("Contract text must be 100,000 characters or fewer.")
         return clean
 
+    def create(self, validated_data):
+        contract = super().create(validated_data)
+        if contract.department and contract.employee.department != contract.department:
+            contract.employee.department = contract.department
+            contract.employee.save(update_fields=["department"])
+        return contract
+
+    def update(self, instance, validated_data):
+        contract = super().update(instance, validated_data)
+        if contract.department and contract.employee.department != contract.department:
+            contract.employee.department = contract.department
+            contract.employee.save(update_fields=["department"])
+        return contract
+
     class Meta:
         model = Contract
         fields = [
-            "id", "employee", "employee_name", "employee_email", "revision_of", "employer_message", "title", "start_date", "end_date", "status",
+            "id", "employee", "employee_name", "employee_email", "revision_of", "employer_message", "title", "department", "start_date", "end_date", "status",
             "terms", "content", "document", "document_name", "signature_status", "sent_at",
-            "notification_sent_at", "signed_at", "signer_name", "signature_data", "created_at",
+            "notification_sent_at", "signed_at", "signer_name", "signature_data", "worker_approval_status",
+            "worker_approved_at", "worker_approved_by", "termination", "created_at",
         ]
         read_only_fields = [
             "created_at", "revision_of", "employer_message", "signature_status", "sent_at", "notification_sent_at", "signed_at", "signer_name", "signature_data",
+            "worker_approval_status", "worker_approved_at", "worker_approved_by",
         ]
 
 
 class AttendanceSerializer(ManagerRecordSerializer):
     def validate(self, attrs):
+        if self.instance and "shift" in attrs and attrs["shift"] != self.instance.shift:
+            raise serializers.ValidationError({"shift": "A recorded shift cannot be changed."})
         employee, date = self.value(attrs, "employee"), self.value(attrs, "date")
         if date < employee.date_joined:
             raise serializers.ValidationError({"date": "Attendance cannot precede the employee's joining date."})
@@ -241,6 +276,15 @@ class LeaveSerializer(ManagerRecordSerializer):
         return leave_management.leave_days(obj.employee, obj.start_date, obj.end_date)
 
     def validate(self, attrs):
+        if self.instance:
+            protected = {"employee", "leave_type", "start_date", "end_date", "reason"}
+            attempted = protected.intersection(attrs)
+            if attempted:
+                raise serializers.ValidationError(
+                    "Employers cannot edit an employee's leave request. They may only approve or reject it.")
+            next_status = attrs.get("status", self.instance.status)
+            if self.instance.status != "pending" and next_status != self.instance.status:
+                raise serializers.ValidationError("A completed leave decision cannot be changed.")
         self.validate_dates(attrs)
         employee = self.value(attrs, "employee")
         start, end = self.value(attrs, "start_date"), self.value(attrs, "end_date")
@@ -337,6 +381,48 @@ class HolidaySerializer(serializers.ModelSerializer):
         model = Holiday
         fields = ["id", "name", "date", "notes"]
         validators = []
+
+
+class AnnouncementSerializer(serializers.ModelSerializer):
+    read_count = serializers.IntegerField(source="reads.count", read_only=True)
+
+    class Meta:
+        model = Announcement
+        fields = ["id", "title", "message", "created_by", "published_at", "read_count"]
+        read_only_fields = ["created_by", "published_at", "read_count"]
+
+
+class CalendarEventSerializer(serializers.ModelSerializer):
+    employee_ids = serializers.PrimaryKeyRelatedField(
+        source="invited_employees", many=True, queryset=Employee.objects.none(), required=False)
+
+    def get_fields(self):
+        fields = super().get_fields()
+        fields["employee_ids"].child_relation.queryset = Employee.objects.filter(
+            business_id=serializer_business_id(self), is_active=True)
+        return fields
+
+    def validate(self, attrs):
+        start = attrs.get("date", getattr(self.instance, "date", None))
+        end = attrs.get("end_date", getattr(self.instance, "end_date", None))
+        if start and end and end < start:
+            raise serializers.ValidationError({"end_date": "End date must be on or after the start date."})
+        start_time = attrs.get("start_time", getattr(self.instance, "start_time", None))
+        end_time = attrs.get("end_time", getattr(self.instance, "end_time", None))
+        if start and (not end or end == start) and start_time and end_time and end_time <= start_time:
+            raise serializers.ValidationError({"end_time": "End time must be later than the start time."})
+        all_employees = attrs.get("all_employees", getattr(self.instance, "all_employees", True))
+        invited = attrs.get("invited_employees", None)
+        has_invited = bool(invited) if invited is not None else bool(self.instance and self.instance.invited_employees.exists())
+        if not all_employees and not has_invited:
+            raise serializers.ValidationError({"employee_ids": "Select at least one employee."})
+        return attrs
+
+    class Meta:
+        model = CalendarEvent
+        fields = ["id", "title", "category", "date", "end_date", "start_time", "end_time", "location",
+                  "description", "all_employees", "employee_ids", "created_by", "created_at"]
+        read_only_fields = ["created_by", "created_at"]
 
 
 class SalarySerializer(ManagerRecordSerializer):

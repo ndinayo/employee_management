@@ -1,4 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+
+const A4_WIDTH = 794;
+const A4_HEIGHT = 1123;
+const ZOOM_STEP = 0.1;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 1.5;
 
 const tools = [
   ["bold", "Bold", "B"], ["italic", "Italic", "I"], ["underline", "Underline", "U"],
@@ -10,6 +16,7 @@ const tools = [
 
 export function RichTextEditor({ value, onChange }) {
   const editor = useRef(null);
+  const [zoom, setZoom] = useState(() => window.innerWidth <= 600 ? 0.5 : 0.8);
 
   useEffect(() => {
     if (editor.current && document.activeElement !== editor.current && editor.current.innerHTML !== (value || "")) {
@@ -23,6 +30,10 @@ export function RichTextEditor({ value, onChange }) {
     onChange(editor.current?.innerHTML || "");
   }
 
+  function changeZoom(direction) {
+    setZoom((current) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number((current + direction * ZOOM_STEP).toFixed(1)))));
+  }
+
   return <div className="contract-editor-shell">
     <div className="contract-toolbar" role="toolbar" aria-label="Contract formatting">
       <select aria-label="Text style" defaultValue="p" onChange={(event) => command("formatBlock", event.target.value)}>
@@ -31,10 +42,22 @@ export function RichTextEditor({ value, onChange }) {
       </select>
       {tools.map(([name, title, text]) => <button key={name} type="button" title={title} aria-label={title}
         onMouseDown={(event) => { event.preventDefault(); command(name); }}>{text}</button>)}
+      <div className="contract-zoom-controls" aria-label="Contract paper zoom">
+        <button type="button" aria-label="Zoom contract out" disabled={zoom <= MIN_ZOOM}
+          onMouseDown={(event) => { event.preventDefault(); changeZoom(-1); }}>-</button>
+        <button type="button" className="contract-zoom-value" aria-label="Reset contract zoom"
+          title="Reset zoom" onMouseDown={(event) => { event.preventDefault(); setZoom(1); }}>{Math.round(zoom * 100)}%</button>
+        <button type="button" aria-label="Zoom contract in" disabled={zoom >= MAX_ZOOM}
+          onMouseDown={(event) => { event.preventDefault(); changeZoom(1); }}>+</button>
+      </div>
     </div>
-    <div ref={editor} className="contract-editor" contentEditable suppressContentEditableWarning
+    <div className="contract-editor-viewport">
+      <div className="contract-editor-stage" style={{ width: A4_WIDTH * zoom, height: A4_HEIGHT * zoom }}>
+        <div ref={editor} className="contract-editor" contentEditable suppressContentEditableWarning style={{ transform: `scale(${zoom})` }}
       data-placeholder="Write the complete employment contract here…"
-      onInput={(event) => onChange(event.currentTarget.innerHTML)} />
+          onInput={(event) => onChange(event.currentTarget.innerHTML)} />
+      </div>
+    </div>
   </div>;
 }
 
@@ -44,6 +67,7 @@ export function DigitalContractDocument({ contract }) {
       <p className="eyebrow dark-eyebrow">DIGITAL CONTRACT</p>
       <h2>{contract.title}</h2>
       <p>{contract.business_name || ""}{contract.employee_name ? ` · ${contract.employee_name}` : ""}</p>
+      {contract.department && <p className="muted">Department: {contract.department}</p>}
       <p className="muted">Effective {contract.start_date}{contract.end_date ? ` to ${contract.end_date}` : " · ongoing"}</p>
     </header>
     <div className="contract-paper-body" dangerouslySetInnerHTML={{ __html: contract.content }} />
