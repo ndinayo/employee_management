@@ -55,6 +55,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    # Documentation only. drf-spectacular reads the existing views, serializers
+    # and permissions; it does not take part in handling requests.
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 SIMPLE_JWT = {
@@ -64,6 +67,96 @@ SIMPLE_JWT = {
 
 # Password reset links are intentionally short-lived.
 PASSWORD_RESET_TIMEOUT = 60 * 60
+
+# --- OpenAPI / Swagger documentation -----------------------------------------
+# Purely descriptive: it changes nothing about how requests are handled.
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Employee Management API",
+    "VERSION": "1.0.0",
+    "DESCRIPTION": """
+Interactive documentation for the Employee Management REST API.
+
+### Roles
+
+Every account has exactly one role, stored on its `AccountProfile`:
+
+| Role | What it can reach |
+| --- | --- |
+| `admin` | the `/api/admin/...` platform endpoints: the dashboard, platform health, companies, employers, every employee, and messages from companies |
+| `employer` | the employer workspace: employees, contracts, attendance, leave, holidays, announcements, calendar, salaries, payroll, reports, and `/api/messages/` to the platform team |
+| `employee` | only the `/api/me/...` endpoints, and only once an employer has **approved their signed contract** |
+
+A company also has a lifecycle of its own, held on its `Business` row and changed
+only by the super admin: `pending` (signed up, not verified yet), `active`, and
+`suspended` (its employer sign-ins are deactivated).
+
+### Signing in from this page
+
+1. `POST /api/token/` with `username` (a username **or** an email address) and `password`.
+2. Copy the `access` value from the response.
+3. Press **Authorize** at the top of this page and paste it into `jwtAuth`.
+4. Protected operations now send `Authorization: Bearer <access>` for you.
+
+Access tokens last 30 minutes; refresh them with `POST /api/token/refresh/`.
+Accounts created by an employer come back with `must_change_password: true` and
+must call `POST /api/account/password/` before anything else is useful.
+
+### Errors
+
+Validation failures return **400** with either `{"field": ["message", ...]}` or
+`{"detail": "message"}`. Missing or expired credentials return **401**, a role
+that is not allowed to use an endpoint returns **403**, and an unknown id
+returns **404**.
+""",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
+    "SCHEMA_PATH_PREFIX": "/api",
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SORT_OPERATIONS": False,
+    # Ship the UI from our own static files rather than a CDN.
+    "SWAGGER_UI_DIST": "SIDECAR",
+    "SWAGGER_UI_FAVICON_HREF": "SIDECAR",
+    "REDOC_DIST": "SIDECAR",
+    "SWAGGER_UI_SETTINGS": {
+        # Deep linking makes Swagger UI write a "#/Tag" fragment into the address
+        # bar as you browse. No address on this site carries a fragment.
+        "deepLinking": False,
+        "persistAuthorization": True,
+        "displayRequestDuration": True,
+        "filter": True,
+        "docExpansion": "none",
+        "tryItOutEnabled": True,
+    },
+    "TAGS": [
+        {"name": "Health", "description": "Unauthenticated readiness probe."},
+        {"name": "Authentication", "description": "Sign up, obtain and refresh JWTs, and reset a forgotten password."},
+        {"name": "Account", "description": "The signed-in account: who am I, my password, shared invitation email."},
+        {"name": "Platform administration", "description": "Super admin only. The platform dashboard and health, companies and their lifecycle, employer accounts, every employee, and the conversations companies open with the platform team."},
+        {"name": "Employer · Employees", "description": "Employer only. The employee register for the employer's own business."},
+        {"name": "Employer · Contracts", "description": "Employer only. Draft, send, approve and terminate employment contracts."},
+        {"name": "Employer · Attendance", "description": "Employer only. Attendance records the employer enters or corrects."},
+        {"name": "Employer · Leave", "description": "Employer only. Approve or reject leave, and set yearly leave allocations."},
+        {"name": "Employer · Holidays", "description": "Employer only. Company holidays, which are excluded from leave day counts."},
+        {"name": "Employer · Announcements", "description": "Employer only. Announcements broadcast to the whole business."},
+        {"name": "Employer · Calendar", "description": "Employer only. Company calendar events, for everyone or named invitees."},
+        {"name": "Employer · Payroll", "description": "Employer only. Monthly salaries and payroll / payslip records."},
+        {"name": "Employer · Reports", "description": "Employer only. The manager dashboard roll-up for one date."},
+        {"name": "Employer · Messages", "description": "Employer only. This company's own conversation with the platform team."},
+        {"name": "Employee workspace", "description": "Employee only, and only after the employer approves the signed contract."},
+    ],
+    # Several models call a field "status", so name those enums explicitly.
+    "ENUM_NAME_OVERRIDES": {
+        "ContractStatusEnum": "api.schema.CONTRACT_STATUS_CHOICES",
+        "LeaveStatusEnum": "api.schema.LEAVE_STATUS_CHOICES",
+        "CompanyStatusEnum": "api.schema.COMPANY_STATUS_CHOICES",
+    },
+    "POSTPROCESSING_HOOKS": [
+        "drf_spectacular.hooks.postprocess_schema_enums",
+        # Adds /api/health/, which is a plain Django view and therefore invisible
+        # to the DRF-based generator.
+        "api.schema.add_non_drf_paths",
+    ],
+}
 
 
 # Application definition
@@ -79,6 +172,10 @@ INSTALLED_APPS = [
     "api",
     "rest_framework",
     "corsheaders",
+    "drf_spectacular",
+    # Serves the Swagger UI / ReDoc bundles from this project's static files so
+    # the docs page works without reaching out to a CDN.
+    "drf_spectacular_sidecar",
 ]
 
 JAZZMIN_SETTINGS = {

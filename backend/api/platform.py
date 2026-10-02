@@ -4,6 +4,9 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import (OpenApiExample, OpenApiParameter, OpenApiResponse,
+                                   extend_schema, extend_schema_view)
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -12,7 +15,21 @@ from rest_framework.views import APIView
 from . import onboarding
 from .models import AccountProfile, Business, Employee, Holiday
 from .permissions import IsAdmin
+from .schema import (RESPONSE_401, RESPONSE_403_ADMIN, RESPONSE_404, AdminBusinessSerializer,
+                     AdminEmployeeResponseSerializer,
+                     EmployerResponseSerializer, with_errors)
 from .serializers import EmployeeSerializer
+
+# The platform endpoints are all administrator-only, so they share one set of
+# error responses. Documentation only.
+ADMIN_ID = OpenApiParameter(
+    name="pk", type=OpenApiTypes.INT, location=OpenApiParameter.PATH, required=True,
+    description="The record's numeric id.",
+)
+
+
+def admin_responses(success, **kwargs):
+    return with_errors(success, forbidden=RESPONSE_403_ADMIN, **kwargs)
 
 
 def account_status(employee):
@@ -159,31 +176,68 @@ class AdminEmployeeSerializer(serializers.Serializer):
 
 
 @transaction.atomic
-def purge_employer(user):
-    profile = user.account_profile
-    business = profile.business
+def set_company_status(business, status):
+    """Move a company through its lifecycle.
+
+    Suspending closes the workspace by deactivating the company's employer
+    sign-ins, which is the same lever the per-employer switch uses; activating
+    restores them. Nothing the company owns is deleted or edited.
+    """
+    if business.status == status:
+        return business
+    business.status = status
+    business.status_changed_at = timezone.now()
+    business.save(update_fields=["status", "status_changed_at"])
+    if status in ("suspended", "active"):
+        owners = AccountProfile.objects.filter(role="employer", business=business)
+        get_user_model().objects.filter(
+            pk__in=owners.values("user_id")).update(is_active=status == "active")
+    return business
+
+
+@transaction.atomic
+def purge_business(business):
+    """Remove a whole company: its employees, their accounts, its records and
+    the employer sign-in that belongs to it. Business is the only unit the
+    platform admin deletes; a company's employer is never removed on its own."""
     for employee in list(Employee.objects.filter(business=business)):
         onboarding.purge_employee(employee)
     Holiday.objects.filter(business=business).delete()
-    profile.delete()
-    user.delete()
+    # AccountProfile.business is one-to-one, so a company has at most one
+    # employer, and it has to go before the business it protects.
+    profile = getattr(business, "owner_profile", None)
+    if profile:
+        user = profile.user
+        profile.delete()
+        user.delete()
     business.delete()
 
 
-class AdminOverviewView(APIView):
-    permission_classes = [IsAdmin]
-
-    def get(self, request):
-        employees = Employee.objects.all()
-        return Response({
-            "businesses": Business.objects.count(),
-            "employers": AccountProfile.objects.filter(role="employer").count(),
-            "employees": employees.count(),
-            "active_employees": employees.filter(is_active=True).count(),
-            "invited_employees": AccountProfile.objects.filter(role="employee", must_change_password=True).count(),
-        })
-
-
+@extend_schema(tags=["Platform administration"])
+@extend_schema_view(
+    get=extend_schema(
+        operation_id="admin_employers_list",
+        summary="List employers",
+        description="Every employer account on the platform, with its business and employee "
+                    "counts, ordered by username.",
+        responses=admin_responses(
+            {200: EmployerResponseSerializer(many=True)}, bad_request=False),
+    ),
+    post=extend_schema(
+        operation_id="admin_employers_create",
+        summary="Create an employer",
+        description="Creates the business and the employer's sign-in account together. The "
+                    "password is checked against Django's password validators.",
+        request=EmployerSerializer,
+        responses=admin_responses({201: EmployerResponseSerializer}),
+        examples=[OpenApiExample(
+            "New employer",
+            request_only=True,
+            value={"username": "kigali-books", "email": "owner@kigali-books.example",
+                   "password": "S0me-strong-passphrase", "business_name": "Kigali Books Ltd"},
+        )],
+    ),
+)
 class EmployerListView(APIView):
     permission_classes = [IsAdmin]
 
@@ -202,6 +256,27 @@ class EmployerListView(APIView):
         return Response(EmployerSerializer(user).data, status=201)
 
 
+@extend_schema(tags=["Platform administration"], parameters=[ADMIN_ID])
+@extend_schema_view(
+    get=extend_schema(
+        operation_id="admin_employers_retrieve",
+        summary="Retrieve an employer",
+        description="One employer account with its business, employee counts, sign-in history and "
+                    "whether invitation email is set up.",
+        responses=admin_responses(
+            {200: EmployerResponseSerializer}, bad_request=False, not_found=True),
+    ),
+    patch=extend_schema(
+        operation_id="admin_employers_partial_update",
+        summary="Update an employer",
+        description="Send only the fields that change. A new `password` is validated and "
+                    "replaces the old one; `is_active: false` suspends the account without "
+                    "deleting anything.",
+        request=EmployerSerializer,
+        responses=admin_responses({200: EmployerResponseSerializer}, not_found=True),
+        examples=[OpenApiExample("Suspend", request_only=True, value={"is_active": False})],
+    ),
+)
 class EmployerDetailView(APIView):
     permission_classes = [IsAdmin]
 
@@ -221,11 +296,32 @@ class EmployerDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         return Response(EmployerSerializer(serializer.save()).data)
 
-    def delete(self, request, pk):
-        purge_employer(self.get_user(pk))
-        return Response(status=204)
 
-
+@extend_schema(tags=["Platform administration"])
+@extend_schema_view(
+    get=extend_schema(
+        operation_id="admin_employees_list",
+        summary="List every employee",
+        description="Employees across all businesses, ordered by surname.",
+        responses=admin_responses(
+            {200: AdminEmployeeResponseSerializer(many=True)}, bad_request=False),
+    ),
+    post=extend_schema(
+        operation_id="admin_employees_create",
+        summary="Add an employee to a business",
+        description="Creates the employee in the named business and opens their sign-in "
+                    "account, the same way an employer hiring them would. The result of the "
+                    "invitation is in `invite`.",
+        request=AdminEmployeeSerializer,
+        responses=admin_responses({201: AdminEmployeeResponseSerializer}),
+        examples=[OpenApiExample(
+            "New employee",
+            request_only=True,
+            value={"business": 1, "first_name": "Amina", "last_name": "Uwase",
+                   "job_title": "Accountant", "email": "amina.uwase@example.com"},
+        )],
+    ),
+)
 class AdminEmployeeListView(APIView):
     permission_classes = [IsAdmin]
 
@@ -239,6 +335,34 @@ class AdminEmployeeListView(APIView):
         return Response(AdminEmployeeSerializer(serializer.save()).data, status=201)
 
 
+@extend_schema(tags=["Platform administration"], parameters=[ADMIN_ID])
+@extend_schema_view(
+    get=extend_schema(
+        operation_id="admin_employees_retrieve",
+        summary="Retrieve an employee",
+        description="One employee from any business on the platform, with their business and the "
+                    "state of their sign-in account.",
+        responses=admin_responses(
+            {200: AdminEmployeeResponseSerializer}, bad_request=False, not_found=True),
+    ),
+    patch=extend_schema(
+        operation_id="admin_employees_partial_update",
+        summary="Update an employee",
+        description="Send only the fields that change. `business` may be used to move the "
+                    "employee to another business.",
+        request=AdminEmployeeSerializer,
+        responses=admin_responses({200: AdminEmployeeResponseSerializer}, not_found=True),
+        examples=[OpenApiExample("Deactivate", request_only=True, value={"is_active": False})],
+    ),
+    delete=extend_schema(
+        operation_id="admin_employees_destroy",
+        summary="Delete an employee",
+        description="Removes the employee, their sign-in account and all of their records.",
+        responses=admin_responses(
+            {204: OpenApiResponse(description="Deleted. No body.")},
+            bad_request=False, not_found=True),
+    ),
+)
 class AdminEmployeeDetailView(APIView):
     permission_classes = [IsAdmin]
 
@@ -262,8 +386,91 @@ class AdminEmployeeDetailView(APIView):
         return Response(status=204)
 
 
+@extend_schema(
+    tags=["Platform administration"],
+    summary="List companies",
+    description="Every company on the platform, ordered by name, with its employer and "
+                "employee counts. Also fills in the `business` field when creating an employee.",
+    responses=admin_responses({200: AdminBusinessSerializer(many=True)}, bad_request=False),
+)
 class AdminBusinessListView(APIView):
     permission_classes = [IsAdmin]
 
     def get(self, request):
-        return Response([{"id": row.pk, "name": row.name} for row in Business.objects.order_by("name")])
+        rows = Business.objects.select_related("owner_profile__user").order_by("name")
+        employees = Employee.objects.values("business_id", "is_active")
+        counts = {}
+        for row in employees:
+            total, active = counts.get(row["business_id"], (0, 0))
+            counts[row["business_id"]] = (total + 1, active + (1 if row["is_active"] else 0))
+        return Response([_company(row, *counts.get(row.pk, (0, 0))) for row in rows])
+
+
+def _company(business, employee_count, active_employee_count):
+    profile = getattr(business, "owner_profile", None)
+    return {
+        "id": business.pk, "name": business.name,
+        "status": business.status,
+        "status_changed_at": as_when(business.status_changed_at),
+        "created_at": as_when(business.created_at),
+        "employer_username": profile.user.username if profile else "",
+        "employer_email": profile.user.email if profile else "",
+        "employer_is_active": bool(profile and profile.user.is_active),
+        "employee_count": employee_count,
+        "active_employee_count": active_employee_count,
+        "last_login_at": as_when(profile.user.last_login) if profile else "",
+    }
+
+
+class BusinessStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=Business.STATUSES)
+
+
+@extend_schema(tags=["Platform administration"], parameters=[ADMIN_ID])
+@extend_schema_view(
+    patch=extend_schema(
+        operation_id="admin_businesses_partial_update",
+        summary="Change a company's status",
+        description="Moves the company through its lifecycle. `suspended` also deactivates "
+                    "its employer sign-ins, so the workspace closes immediately; moving back "
+                    "to `active` restores them. `pending` marks a company as awaiting "
+                    "verification and is a queue for the administrator; it does not close the "
+                    "workspace. Nothing in the company's records is touched either way.",
+        request=BusinessStatusSerializer,
+        responses=admin_responses({200: AdminBusinessSerializer}, not_found=True),
+        examples=[OpenApiExample("Suspend a company", request_only=True,
+                                 value={"status": "suspended"})],
+    ),
+    delete=extend_schema(
+        operation_id="admin_businesses_destroy",
+        summary="Delete a company",
+        description="Permanently removes the company, its employer sign-in, every employee in "
+                    "it and all of their records. This is the only deletion the platform admin "
+                    "performs at this level: an employer account cannot be deleted on its own, "
+                    "only suspended. There is no undo.",
+        responses=admin_responses(
+            {204: OpenApiResponse(description="Deleted. No body.")},
+            bad_request=False, not_found=True),
+    ),
+)
+class AdminBusinessDetailView(APIView):
+    permission_classes = [IsAdmin]
+
+    def get_business(self, pk):
+        try:
+            return Business.objects.select_related("owner_profile__user").get(pk=pk)
+        except Business.DoesNotExist:
+            raise NotFound("That company was not found.")
+
+    def patch(self, request, pk):
+        business = self.get_business(pk)
+        serializer = BusinessStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        set_company_status(business, serializer.validated_data["status"])
+        employees = Employee.objects.filter(business=business)
+        return Response(_company(business, employees.count(),
+                                 employees.filter(is_active=True).count()))
+
+    def delete(self, request, pk):
+        purge_business(self.get_business(pk))
+        return Response(status=204)

@@ -8,6 +8,9 @@ from django.db.models import Sum
 from django.db.models.deletion import ProtectedError
 from django.http import FileResponse, Http404
 from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import (OpenApiExample, OpenApiParameter, OpenApiResponse,
+                                   extend_schema, extend_schema_view, inline_serializer)
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -18,10 +21,21 @@ from .models import (AccountProfile, Employee, Contract, ContractTerminationRequ
                      Attendance, LeaveBalance, LeaveRequest, Holiday, Announcement,
                      CalendarEvent, Salary, Payroll)
 from .permissions import IsManager, business_id_for
+from .schema import (RESPONSE_401, RESPONSE_403_MANAGER, RESPONSE_404, DetailSerializer,
+                     ManagerReportsSerializer, NotificationSerializer, with_errors)
 from .serializers import (EmployeeSerializer, ContractSerializer, AttendanceSerializer,
                           LeaveBalanceSerializer, LeaveSerializer, HolidaySerializer,
                           AnnouncementSerializer, CalendarEventSerializer,
                           SalarySerializer, PayrollSerializer)
+
+# Shared pieces of the generated documentation. None of this affects request
+# handling; it only tells drf-spectacular what the views already return.
+FILE_RESPONSES = {
+    401: RESPONSE_401,
+    403: RESPONSE_403_MANAGER,
+    404: OpenApiResponse(response=DetailSerializer,
+                         description="No file is attached, or the stored file is missing."),
+}
 
 
 class ManagerViewSet(viewsets.ModelViewSet):
@@ -50,6 +64,67 @@ class ManagerViewSet(viewsets.ModelViewSet):
             )
 
 
+@extend_schema(tags=["Employer · Employees"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List employees",
+        description="Every employee in the signed-in employer's own business, ordered by surname.",
+        responses=with_errors({200: EmployeeSerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one employee",
+        description="The full record for one employee, including the fields the employee "
+                    "maintains themselves. Scoped to the employer's own business; another "
+                    "business's record returns 404.",
+        responses=with_errors({200: EmployeeSerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Hire an employee",
+        description=(
+            "Adds an employee to the employer's business and opens a sign-in account for them "
+            "in the same request. The temporary password is emailed when invitation email is "
+            "configured; otherwise it comes back in `invite.temporary_password` so the employer "
+            "can pass it on.\n\n"
+            "Only `first_name`, `last_name`, `email` and `job_title` are required - the employee "
+            "fills in the rest from their own workspace. Send `multipart/form-data` when "
+            "attaching `photo` or `contract_document`."
+        ),
+        responses=with_errors({201: EmployeeSerializer}),
+        examples=[OpenApiExample(
+            "Minimum payload",
+            request_only=True,
+            value={"first_name": "Amina", "last_name": "Uwase",
+                   "email": "amina.uwase@example.com", "job_title": "Accountant"},
+        )],
+    ),
+    update=extend_schema(
+        summary="Replace an employee",
+        description="Every writable field must be supplied; use PATCH to change only some of "
+                    "them. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors({200: EmployeeSerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Update an employee",
+        description="Send only the fields that change. Use this to set `is_active: false` "
+                    "instead of deleting an employee who has employment records.",
+        responses=with_errors({200: EmployeeSerializer}, not_found=True),
+        examples=[OpenApiExample("Deactivate", request_only=True, value={"is_active": False})],
+    ),
+    destroy=extend_schema(
+        summary="Delete an employee",
+        description="Removes the employee, their sign-in account and their records. Deactivate "
+                    "instead when the employment history must be kept.",
+        responses=with_errors(
+            {204: OpenApiResponse(description="Deleted. No body.")}, not_found=True),
+    ),
+    photo=extend_schema(
+        summary="Download an employee's photo",
+        description="Profile photos are stored privately and are only ever served through this "
+                    "endpoint, never from a public media URL.",
+        responses={(200, "image/*"): OpenApiTypes.BINARY, **FILE_RESPONSES},
+    ),
+)
 class EmployeeViewSet(ManagerViewSet):
     queryset = Employee.objects.select_related("account").prefetch_related("contracts").order_by("last_name", "first_name", "id")
     serializer_class = EmployeeSerializer
@@ -86,6 +161,146 @@ class ContractTerminationDecisionSerializer(serializers.Serializer):
     response_notes = serializers.CharField(max_length=4000, required=False, allow_blank=True, trim_whitespace=True)
 
 
+class ContractNotificationSerializer(ContractSerializer):
+    """Documentation only: a contract plus the outcome of its notification email."""
+
+    notification = NotificationSerializer(read_only=True)
+
+    class Meta(ContractSerializer.Meta):
+        fields = ContractSerializer.Meta.fields + ["notification"]
+
+
+@extend_schema(tags=["Employer · Contracts"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List contracts",
+        description="Every contract belonging to the employer's own employees, newest start "
+                    "date first.",
+        responses=with_errors({200: ContractSerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one contract",
+        description="One contract with its signature state, worker approval state and any "
+                    "termination request attached to it. Scoped to the employer's own business; "
+                    "another business's record returns 404.",
+        responses=with_errors({200: ContractSerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Create a contract",
+        description=(
+            "Creates a contract in `signature_status: draft`. Write the signable text into "
+            "`content` (a small allow-list of HTML tags survives sanitising) and/or attach a "
+            "PDF/DOC/DOCX of up to 10 MB as `document` using `multipart/form-data`.\n\n"
+            "Setting `department` also updates the employee's department."
+        ),
+        responses=with_errors({201: ContractSerializer}),
+        examples=[OpenApiExample(
+            "Draft contract",
+            request_only=True,
+            value={"employee": 1, "title": "Accountant - permanent", "department": "Finance",
+                   "start_date": "2026-01-05", "end_date": None, "status": "active",
+                   "content": "<p>This agreement is made between...</p>"},
+        )],
+    ),
+    update=extend_schema(
+        summary="Replace a draft contract",
+        description="Rejected with 400 once the contract has been sent for signature.",
+        responses=with_errors({200: ContractSerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Update a draft contract",
+        description="Rejected with 400 once the contract has been sent for signature.",
+        responses=with_errors({200: ContractSerializer}, not_found=True),
+    ),
+    destroy=extend_schema(
+        summary="Delete a draft contract",
+        description="Only a contract still in `signature_status: draft` can be deleted.",
+        responses=with_errors(
+            {204: OpenApiResponse(description="Deleted. No body.")}, not_found=True),
+    ),
+    send_for_signature=extend_schema(
+        summary="Send a contract for signature",
+        description=(
+            "Moves a draft to `signature_status: sent`, fingerprints `content` so later edits "
+            "invalidate the signature, and emails the employee. Requires non-empty `content` "
+            "and an employee who already has a sign-in account.\n\n"
+            "The response is the contract plus a `notification` object saying whether the email "
+            "actually left the server. Takes no request body."
+        ),
+        request=None,
+        responses=with_errors({200: ContractNotificationSerializer}, not_found=True),
+    ),
+    resend_signature_email=extend_schema(
+        summary="Email the signature request again",
+        description="Only valid while `signature_status` is `sent`. An optional `message` is "
+                    "stored on the contract and included in the email.",
+        request=ContractMessageSerializer,
+        responses=with_errors(
+            {200: NotificationSerializer,
+             503: OpenApiResponse(
+                 response=DetailSerializer,
+                 description="The email could not be sent. The contract is still available in "
+                             "the employee's dashboard.")},
+            not_found=True),
+        examples=[OpenApiExample("With a note", request_only=True,
+                                 value={"message": "Please sign before Friday."})],
+    ),
+    request_new_signature=extend_schema(
+        summary="Request a corrected signature",
+        description="Copies a **signed** contract into a new one linked by `revision_of` and "
+                    "sends that copy for signature. Rejected while an earlier correction is "
+                    "still awaiting the employee.",
+        request=ContractMessageSerializer,
+        responses=with_errors({201: ContractNotificationSerializer}, not_found=True),
+    ),
+    approve_worker=extend_schema(
+        summary="Approve the worker to start",
+        description="The final onboarding step. Requires a signed contract with `status: "
+                    "active`. Until this succeeds, every `/api/me/...` endpoint returns 403 "
+                    "for that employee.",
+        request=None,
+        responses=with_errors({200: ContractNotificationSerializer}, not_found=True),
+    ),
+    initiate_termination=extend_schema(
+        summary="Start an employer-led termination",
+        description="Opens a termination request in `awaiting_acknowledgement` and notifies the "
+                    "employee. Only one open request per contract, and the date cannot be in "
+                    "the past.",
+        request=ContractTerminationInputSerializer,
+        responses=with_errors({201: ContractSerializer}, not_found=True),
+        examples=[OpenApiExample(
+            "Notice period",
+            request_only=True,
+            value={"reason": "Restructuring of the finance team.",
+                   "proposed_last_working_date": "2026-11-30"},
+        )],
+    ),
+    termination_decision=extend_schema(
+        summary="Approve or reject an employee's termination request",
+        description="Answers a termination the **employee** raised, named by `request_id`. "
+                    "Approving sets the contract to `terminated_mutual` and moves `end_date` to "
+                    "the proposed last working date.",
+        request=ContractTerminationDecisionSerializer,
+        responses=with_errors({200: ContractSerializer}, not_found=True),
+        examples=[OpenApiExample(
+            "Approve",
+            request_only=True,
+            value={"request_id": 7, "decision": "approved",
+                   "response_notes": "Agreed, thank you for the notice."},
+        )],
+    ),
+    document=extend_schema(
+        summary="Download the attached contract file",
+        description="Returns the stored PDF/DOC/DOCX as an attachment.",
+        responses={(200, "application/octet-stream"): OpenApiTypes.BINARY, **FILE_RESPONSES},
+    ),
+    preview=extend_schema(
+        summary="Stream the attached contract file for preview",
+        description="The same bytes as `document`, but without a `Content-Disposition` header "
+                    "so the app can render them in its own PDF viewer.",
+        responses={(200, "application/octet-stream"): OpenApiTypes.BINARY, **FILE_RESPONSES},
+    ),
+)
 class ContractViewSet(ManagerViewSet):
     queryset = Contract.objects.select_related("employee").order_by("-start_date", "-id")
     serializer_class = ContractSerializer
@@ -277,11 +492,117 @@ class ContractViewSet(ManagerViewSet):
         return response
 
 
+@extend_schema(tags=["Employer · Attendance"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List attendance records",
+        description="Attendance for the employer's own employees, most recent date first. "
+                    "Includes both employer-entered rows and rows employees clocked themselves.",
+        responses=with_errors({200: AttendanceSerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one attendance record",
+        description="One attendance row, whether the employer entered it or the employee clocked "
+                    "it. Scoped to the employer's own business; another business's record returns "
+                    "404.",
+        responses=with_errors({200: AttendanceSerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Record attendance",
+        description="One row per employee, date and shift. The date cannot precede the "
+                    "employee's joining date, `absent` requires `hours_worked: 0`, and a date "
+                    "already covered by approved leave is rejected.",
+        responses=with_errors({201: AttendanceSerializer}),
+        examples=[OpenApiExample(
+            "A full day",
+            request_only=True,
+            value={"employee": 1, "date": "2026-10-01", "shift": "day",
+                   "status": "present", "hours_worked": "8.00", "notes": ""},
+        )],
+    ),
+    update=extend_schema(
+        summary="Replace an attendance record",
+        description="Every writable field must be supplied, and `shift` must keep its recorded "
+                    "value. Use PATCH to correct one field. Scoped to the employer's own "
+                    "business; another business's record returns 404.",
+        responses=with_errors({200: AttendanceSerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Correct an attendance record",
+        description="`shift` is fixed once recorded and cannot be changed.",
+        responses=with_errors({200: AttendanceSerializer}, not_found=True),
+    ),
+    destroy=extend_schema(
+        summary="Delete an attendance record",
+        description="Removes the row completely. Reports for that date are recalculated from what "
+                    "is left. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors(
+            {204: OpenApiResponse(description="Deleted. No body.")}, not_found=True),
+    ),
+)
 class AttendanceViewSet(ManagerViewSet):
     queryset = Attendance.objects.select_related("employee").order_by("-date", "-id")
     serializer_class = AttendanceSerializer
 
 
+@extend_schema(tags=["Employer · Leave"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List leave requests",
+        description="Leave requests from the employer's own employees, newest start date first.",
+        responses=with_errors({200: LeaveSerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one leave request",
+        description="One leave request with its status, day count and the decision recorded "
+                    "against it. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors({200: LeaveSerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Not available to employers",
+        description="**Always returns 400.** Only the employee may raise leave, through "
+                    "`POST /api/me/leave/`. The route exists because the viewset is a full "
+                    "ModelViewSet.",
+        request=LeaveSerializer,
+        responses={400: OpenApiResponse(
+            response=DetailSerializer,
+            description="Employers cannot create employee leave requests.",
+            examples=[OpenApiExample("Refused", value={
+                "employee": "Employers cannot create employee leave requests. The employee "
+                            "must submit the request."})]),
+            401: RESPONSE_401, 403: RESPONSE_403_MANAGER},
+    ),
+    update=extend_schema(
+        summary="Decide a leave request",
+        description="Only `status` and `decision_notes` may change; touching `employee`, "
+                    "`leave_type`, `start_date`, `end_date` or `reason` is rejected, and a "
+                    "decision cannot be revisited once made.\n\n"
+                    "Approving checks the remaining balance, and emails the employee.",
+        responses=with_errors({200: LeaveSerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Approve or reject a leave request",
+        description="The usual way to decide leave. `decided_at` and `decided_by` are stamped "
+                    "automatically and the employee is emailed.",
+        responses=with_errors({200: LeaveSerializer}, not_found=True),
+        examples=[OpenApiExample(
+            "Approve",
+            request_only=True,
+            value={"status": "approved", "decision_notes": "Enjoy the break."},
+        )],
+    ),
+    destroy=extend_schema(
+        summary="Not available to employers",
+        description="**Always returns 400.** Employers may approve or reject leave but never "
+                    "delete it; the employee cancels their own pending request instead.",
+        responses={400: OpenApiResponse(
+            response=DetailSerializer,
+            description="Employers cannot delete employee leave requests."),
+            401: RESPONSE_401, 403: RESPONSE_403_MANAGER, 404: RESPONSE_404},
+    ),
+)
 class LeaveViewSet(ManagerViewSet):
     queryset = LeaveRequest.objects.select_related("employee").order_by("-start_date", "-id")
     serializer_class = LeaveSerializer
@@ -303,6 +624,58 @@ class LeaveViewSet(ManagerViewSet):
             onboarding.send_leave_notification(leave, leave.status)
 
 
+@extend_schema(tags=["Employer · Leave"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List leave balances",
+        description="Yearly allocations for every employee, with `used_days` and "
+                    "`remaining_days` computed from approved leave. Listing also creates this "
+                    "year's four default balances (annual 20, sick 10, maternity 90, unpaid 0) "
+                    "for any employee still missing them.",
+        responses=with_errors({200: LeaveBalanceSerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one leave balance",
+        description="One employee's allocation for a leave type and year, with the days already "
+                    "taken. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors({200: LeaveBalanceSerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Create a leave balance",
+        description="One row per employee, leave type and year.",
+        responses=with_errors({201: LeaveBalanceSerializer}),
+        examples=[OpenApiExample(
+            "Extra annual leave",
+            request_only=True,
+            value={"employee": 1, "leave_type": "annual", "year": 2026, "days_allocated": "25.0"},
+        )],
+    ),
+    update=extend_schema(
+        summary="Replace a leave balance",
+        description="Every writable field must be supplied; use PATCH to change only the "
+                    "allocation. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors({200: LeaveBalanceSerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Change an allocation",
+        description="Send only `allocated_days`. Lowering it below the days already approved is "
+                    "rejected. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors({200: LeaveBalanceSerializer}, not_found=True),
+        examples=[OpenApiExample("Raise the allocation", request_only=True,
+                                 value={"days_allocated": "24.0"})],
+    ),
+    destroy=extend_schema(
+        summary="Delete a leave balance",
+        description="Removes the allocation. Leave already approved against it is left untouched. "
+                    "Scoped to the employer's own business; another business's record returns "
+                    "404.",
+        responses=with_errors(
+            {204: OpenApiResponse(description="Deleted. No body.")}, not_found=True),
+    ),
+)
 class LeaveBalanceViewSet(ManagerViewSet):
     queryset = LeaveBalance.objects.select_related("employee").order_by(
         "-year", "employee__last_name", "employee__first_name", "leave_type")
@@ -316,21 +689,241 @@ class LeaveBalanceViewSet(ManagerViewSet):
         return super().get_queryset()
 
 
+@extend_schema(tags=["Employer · Holidays"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List company holidays",
+        description="Holidays for the employer's business. These dates are skipped when leave "
+                    "days are counted and make a date a non-working day in reports.",
+        responses=with_errors({200: HolidaySerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one holiday",
+        description="One company holiday. Holidays are excluded from leave day counts and from "
+                    "absence reporting. Scoped to the employer's own business; another business's "
+                    "record returns 404.",
+        responses=with_errors({200: HolidaySerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Add a holiday",
+        description="At most one holiday per date per business.",
+        responses=with_errors({201: HolidaySerializer}),
+        examples=[OpenApiExample(
+            "Public holiday",
+            request_only=True,
+            value={"name": "Independence Day", "date": "2026-07-04", "notes": "Offices closed"},
+        )],
+    ),
+    update=extend_schema(
+        summary="Replace a holiday",
+        description="Every writable field must be supplied; use PATCH to change only some of "
+                    "them. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors({200: HolidaySerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Update a holiday",
+        description="Send only the fields that change. Two holidays cannot share a date in the "
+                    "same business. Scoped to the employer's own business; another business's "
+                    "record returns 404.",
+        responses=with_errors({200: HolidaySerializer}, not_found=True),
+    ),
+    destroy=extend_schema(
+        summary="Delete a holiday",
+        description="Removes the holiday, so that date counts as an ordinary working day again. "
+                    "Scoped to the employer's own business; another business's record returns "
+                    "404.",
+        responses=with_errors(
+            {204: OpenApiResponse(description="Deleted. No body.")}, not_found=True),
+    ),
+)
 class HolidayViewSet(ManagerViewSet):
     queryset = Holiday.objects.order_by("-date", "-id")
     serializer_class = HolidaySerializer
 
 
+@extend_schema(tags=["Employer · Announcements"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List announcements",
+        description="Announcements published to the employer's business, newest first. "
+                    "`read_count` is how many employees have opened each one.",
+        responses=with_errors({200: AnnouncementSerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one announcement",
+        description="One announcement with how many employees have opened it. Scoped to the "
+                    "employer's own business; another business's record returns 404.",
+        responses=with_errors({200: AnnouncementSerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Publish an announcement",
+        description="Goes out to every employee in the business. `created_by` and "
+                    "`published_at` are filled in from the signed-in employer.",
+        responses=with_errors({201: AnnouncementSerializer}),
+        examples=[OpenApiExample(
+            "Office closure",
+            request_only=True,
+            value={"title": "Office closed on Friday",
+                   "message": "The office will be closed for maintenance."},
+        )],
+    ),
+    update=extend_schema(
+        summary="Replace an announcement",
+        description="Every writable field must be supplied; use PATCH to change only some of "
+                    "them. Employees who already opened it keep their read mark. Scoped to the "
+                    "employer's own business; another business's record returns 404.",
+        responses=with_errors({200: AnnouncementSerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Edit an announcement",
+        description="Send only the fields that change. Scoped to the employer's own business; "
+                    "another business's record returns 404.",
+        responses=with_errors({200: AnnouncementSerializer}, not_found=True),
+    ),
+    destroy=extend_schema(
+        summary="Delete an announcement",
+        description="Removes the announcement and every read mark against it. Scoped to the "
+                    "employer's own business; another business's record returns 404.",
+        responses=with_errors(
+            {204: OpenApiResponse(description="Deleted. No body.")}, not_found=True),
+    ),
+)
 class AnnouncementViewSet(ManagerViewSet):
     queryset = Announcement.objects.prefetch_related("reads").all()
     serializer_class = AnnouncementSerializer
 
 
+@extend_schema(tags=["Employer · Calendar"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List calendar events",
+        description="Company calendar events for the employer's business, in date order.",
+        responses=with_errors({200: CalendarEventSerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one calendar event",
+        description="One company calendar event, including who it was addressed to. Scoped to the "
+                    "employer's own business; another business's record returns 404.",
+        responses=with_errors({200: CalendarEventSerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Create a calendar event",
+        description="Leave `all_employees` true to invite the whole business, or set it to "
+                    "false and list the invitees in `employee_ids`. For a single-day event the "
+                    "end time must be later than the start time.",
+        responses=with_errors({201: CalendarEventSerializer}),
+        examples=[
+            OpenApiExample(
+                "Everyone",
+                request_only=True,
+                value={"title": "All-hands meeting", "category": "meeting", "date": "2026-10-15",
+                       "start_time": "09:00:00", "end_time": "10:00:00",
+                       "location": "Main boardroom", "all_employees": True},
+            ),
+            OpenApiExample(
+                "Named invitees",
+                request_only=True,
+                value={"title": "Payroll training", "category": "training", "date": "2026-10-20",
+                       "start_time": "14:00:00", "end_time": "16:00:00",
+                       "all_employees": False, "employee_ids": [1, 2]},
+            ),
+        ],
+    ),
+    update=extend_schema(
+        summary="Replace a calendar event",
+        description="Every writable field must be supplied; use PATCH to change only some of "
+                    "them. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors({200: CalendarEventSerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Update a calendar event",
+        description="Send only the fields that change. Scoped to the employer's own business; "
+                    "another business's record returns 404.",
+        responses=with_errors({200: CalendarEventSerializer}, not_found=True),
+    ),
+    destroy=extend_schema(
+        summary="Delete a calendar event",
+        description="Removes the event from the company calendar for everyone it was addressed "
+                    "to. Scoped to the employer's own business; another business's record returns "
+                    "404.",
+        responses=with_errors(
+            {204: OpenApiResponse(description="Deleted. No body.")}, not_found=True),
+    ),
+)
 class CalendarEventViewSet(ManagerViewSet):
     queryset = CalendarEvent.objects.all()
     serializer_class = CalendarEventSerializer
 
 
+@extend_schema(tags=["Employer · Payroll"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List monthly salaries",
+        description="One salary per employee. Supported currencies: RWF, ZAR, USD, EUR, GBP, "
+                    "BWP, NAD, LSL, SZL, KES, NGN.",
+        responses=with_errors({200: SalarySerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one salary",
+        description="One employee's salary record for a month, with its components and whether it "
+                    "has been marked paid. Scoped to the employer's own business; another "
+                    "business's record returns 404.",
+        responses=with_errors({200: SalarySerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Set an employee's salary",
+        description="Each employee has at most one salary record.",
+        responses=with_errors({201: SalarySerializer}),
+        examples=[OpenApiExample(
+            "Monthly salary",
+            request_only=True,
+            value={"employee": 1, "monthly_amount": "850000.00", "currency": "RWF",
+                   "effective_date": "2026-01-01", "notes": ""},
+        )],
+    ),
+    update=extend_schema(
+        summary="Replace a salary",
+        description="Every writable field must be supplied; use PATCH to change only some of "
+                    "them. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors({200: SalarySerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Update a salary",
+        description="Send only the fields that change. Scoped to the employer's own business; "
+                    "another business's record returns 404.",
+        responses=with_errors({200: SalarySerializer}, not_found=True),
+    ),
+    destroy=extend_schema(
+        summary="Delete a salary",
+        description="Removes the salary record. Any payslip already generated from it is removed "
+                    "with it. Scoped to the employer's own business; another business's record "
+                    "returns 404.",
+        responses=with_errors(
+            {204: OpenApiResponse(description="Deleted. No body.")}, not_found=True),
+    ),
+    mark_paid=extend_schema(
+        summary="Pay a month from the salary record",
+        description="Creates a **paid** payroll record covering a whole calendar month, using "
+                    "this salary as the base pay. Both fields are optional: `month` defaults to "
+                    "the current month and `paid_date` to today. Rejected if payroll already "
+                    "covers any part of that month, or if the employee is inactive.",
+        request=inline_serializer(
+            name="SalaryMarkPaidRequest",
+            fields={
+                "month": serializers.CharField(
+                    required=False, help_text="The month to pay, as YYYY-MM. Defaults to this month."),
+                "paid_date": serializers.DateField(
+                    required=False, help_text="The payment date. Defaults to today."),
+            },
+        ),
+        responses=with_errors({201: PayrollSerializer}, not_found=True),
+        examples=[OpenApiExample("Pay October 2026", request_only=True,
+                                 value={"month": "2026-10", "paid_date": "2026-10-28"})],
+    ),
+)
 class SalaryViewSet(ManagerViewSet):
     queryset = Salary.objects.select_related("employee").order_by("employee__last_name", "id")
     serializer_class = SalarySerializer
@@ -365,6 +958,55 @@ class SalaryViewSet(ManagerViewSet):
         return Response(payroll.data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(tags=["Employer · Payroll"])
+@extend_schema_view(
+    list=extend_schema(
+        summary="List payroll records",
+        description="Payslip records for the employer's own employees, most recent period "
+                    "first. `gross_pay` and `net_pay` are computed, and the employee's name, "
+                    "email, department and job title are snapshotted when the record is written.",
+        responses=with_errors({200: PayrollSerializer(many=True)}, bad_request=False),
+    ),
+    retrieve=extend_schema(
+        summary="Retrieve one payroll record",
+        description="One payroll run for an employee and month, with the payslip figures it was "
+                    "generated from. Scoped to the employer's own business; another business's "
+                    "record returns 404.",
+        responses=with_errors({200: PayrollSerializer}, bad_request=False, not_found=True),
+    ),
+    create=extend_schema(
+        summary="Create a payroll record",
+        description="Periods may not overlap for the same employee, deductions may not exceed "
+                    "gross pay, and `paid_date` is required when `status` is `paid` (and "
+                    "forbidden when it is `draft`).",
+        responses=with_errors({201: PayrollSerializer}),
+        examples=[OpenApiExample(
+            "Draft payslip",
+            request_only=True,
+            value={"employee": 1, "period_start": "2026-10-01", "period_end": "2026-10-31",
+                   "base_salary": "850000.00", "allowances": "50000.00",
+                   "deductions": "120000.00", "currency": "RWF", "status": "draft"},
+        )],
+    ),
+    update=extend_schema(
+        summary="Replace a draft payroll record",
+        description="A record with `status: paid` is locked to preserve the issued payslip.",
+        responses=with_errors({200: PayrollSerializer}, not_found=True),
+    ),
+    partial_update=extend_schema(
+        summary="Update a draft payroll record",
+        description="A record with `status: paid` is locked to preserve the issued payslip.",
+        responses=with_errors({200: PayrollSerializer}, not_found=True),
+        examples=[OpenApiExample("Mark as paid", request_only=True,
+                                 value={"status": "paid", "paid_date": "2026-10-28"})],
+    ),
+    destroy=extend_schema(
+        summary="Delete a draft payroll record",
+        description="Paid records cannot be deleted.",
+        responses=with_errors(
+            {204: OpenApiResponse(description="Deleted. No body.")}, not_found=True),
+    ),
+)
 class PayrollViewSet(ManagerViewSet):
     queryset = Payroll.objects.select_related("employee").order_by("-period_end", "-id")
     serializer_class = PayrollSerializer
@@ -380,6 +1022,31 @@ class ReportQuerySerializer(serializers.Serializer):
     days = serializers.IntegerField(default=30, min_value=1, max_value=365)
 
 
+@extend_schema(
+    tags=["Employer · Reports"],
+    summary="Manager dashboard report",
+    description=(
+        "One roll-up for a single date: who is absent, who is on leave, who has no record at "
+        "all, which contracts are expiring or already expired, month-to-date working hours per "
+        "employee, and month-to-date payroll totals per currency.\n\n"
+        "Every figure is scoped to the signed-in employer's business."
+    ),
+    parameters=[
+        OpenApiParameter(
+            name="date", type=OpenApiTypes.DATE, location=OpenApiParameter.QUERY,
+            required=False,
+            description="The day to report on. Defaults to today in the server time zone.",
+            examples=[OpenApiExample("Today", value="2026-10-02")],
+        ),
+        OpenApiParameter(
+            name="days", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY,
+            required=False,
+            description="How many days ahead to look for expiring contracts. 1-365, default 30.",
+            examples=[OpenApiExample("Next 30 days", value=30)],
+        ),
+    ],
+    responses=with_errors({200: ManagerReportsSerializer}),
+)
 class ManagerReportsView(APIView):
     permission_classes = [IsManager]
 

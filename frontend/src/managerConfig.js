@@ -102,3 +102,19 @@ export const modules = {
     columns: [personColumn, periodColumn, { title: "Gross", value: (row) => money(row.gross_pay, row.currency) }, { title: "Deductions", value: (row) => money(row.deductions, row.currency) }, { title: "Net pay", value: (row) => money(row.net_pay, row.currency) }, statusColumn],
   },
 };
+
+// An event runs from its start date to its end date, so a multi-day event that
+// is already under way still counts as happening today.
+export function eventEnd(item) {
+  return item.end_date || item.date;
+}
+
+// Events happening today or within the next `days` days. The employer sidebar
+// badge and the calendar's Events tab both count the same thing.
+export function upcomingEvents(events, days = 7) {
+  const from = today();
+  const limit = new Date(`${from}T00:00:00`);
+  limit.setDate(limit.getDate() + days);
+  const until = `${limit.getFullYear()}-${String(limit.getMonth() + 1).padStart(2, "0")}-${String(limit.getDate()).padStart(2, "0")}`;
+  return events.filter((item) => eventEnd(item) >= from && item.date <= until);
+}

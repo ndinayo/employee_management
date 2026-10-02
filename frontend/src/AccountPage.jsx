@@ -4,7 +4,7 @@ import { DigitalContractDocument, SignaturePad } from "./DigitalContract";
 import CompanyCalendar, { EmployeeAnnouncements } from "./CompanyCalendar";
 import ModalDialog from "./components/ModalDialog";
 import { useConfirm } from "./components/ConfirmDialog";
-import { acknowledgeMyContractTermination, cancelMyLeave, changePassword, clockMyAttendance, fetchAccount, fetchMyAnnouncements, fetchMyAttendance, fetchMyCalendar, fetchMyContracts, fetchMyLeave, fetchMyPhoto, fetchMyProfile, markMyAnnouncementRead, markMyCalendarEventRead, requestMyContractTermination, saveMyProfile, signMyContract, submitMyLeave, updateMyLeave } from "./api";
+import { acknowledgeMyContractTermination, cancelMyLeave, changePassword, clockMyAttendance, fetchAccount, fetchMyAnnouncements, fetchMyAttendance, fetchMyCalendar, fetchMyContracts, fetchMyLeave, fetchMyPhoto, fetchMyProfile, markAllMyAnnouncementsRead, markAllMyCalendarRead, markMyAnnouncementRead, markMyCalendarEventRead, requestMyContractTermination, saveMyProfile, signMyContract, submitMyLeave, updateMyLeave } from "./api";
 import { label, longDate, today } from "./managerConfig";
 
 // The employer supplies only name, job title and email. Everything here is the
@@ -659,6 +659,14 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
     return saved;
   }
 
+  async function clearAnnouncements() {
+    setAnnouncements(await markAllMyAnnouncementsRead(token));
+  }
+
+  async function clearCalendar() {
+    setCalendarEvents(await markAllMyCalendarRead(token));
+  }
+
   async function openCalendarEvent(item) {
     const saved = await markMyCalendarEventRead(token, item.id);
     setCalendarEvents((current) => current.map((row) => row.id === saved.id ? saved : row));
@@ -700,8 +708,8 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
     {profile && view === "attendance" && <><div className="section-heading"><div><p className="eyebrow dark-eyebrow">WORKDAY</p><h2>Attendance</h2></div></div><TimeClockCard token={token} /></>}
     {profile && view === "leave" && <LeaveManagementCard token={token} />}
     {profile && view === "contract" && <ContractsCard token={token} profile={profile} onAttentionChange={setContractAttention} />}
-    {profile && view === "announcements" && <EmployeeAnnouncements announcements={announcements} onOpen={openAnnouncement} />}
-    {profile && view === "calendar" && <CompanyCalendar events={calendarEvents} onEventOpen={openCalendarEvent} />}
+    {profile && view === "announcements" && <EmployeeAnnouncements announcements={announcements} onOpen={openAnnouncement} onClearAll={clearAnnouncements} />}
+    {profile && view === "calendar" && <CompanyCalendar events={calendarEvents} onEventOpen={openCalendarEvent} onClearAll={clearCalendar} />}
 
     </section></main>
   </>;

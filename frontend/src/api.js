@@ -305,8 +305,10 @@ export function saveAdminEmployer(token, body, id) {
   });
 }
 
-export function deleteAdminEmployer(token, id) {
-  return request(`/api/admin/employers/${id}/`, { method: "DELETE", token });
+// Companies are the only thing the platform admin deletes. An employer account
+// is suspended through saveAdminEmployer({ is_active: false }) instead.
+export function deleteAdminBusiness(token, id) {
+  return request(`/api/admin/businesses/${id}/`, { method: "DELETE", token });
 }
 
 export function fetchAdminEmployees(token) {
@@ -321,4 +323,55 @@ export function saveAdminEmployee(token, body, id) {
 
 export function deleteAdminEmployee(token, id) {
   return request(`/api/admin/employees/${id}/`, { method: "DELETE", token });
+}
+
+// Platform conversation: the administrator and one company, both directions.
+export function fetchAdminThreads(token) {
+  return request("/api/admin/messages/", { token });
+}
+
+export function fetchAdminThread(token, business) {
+  return request(`/api/admin/messages/${business}/`, { token });
+}
+
+export function sendAdminMessage(token, business, body, channel) {
+  return request(`/api/admin/messages/${business}/`, { method: "POST", token, body: { body, channel } });
+}
+
+export function markAdminThreadRead(token, business) {
+  return request(`/api/admin/messages/${business}/read/`, { method: "POST", token });
+}
+
+export function fetchCompanyThread(token) {
+  return request("/api/messages/", { token });
+}
+
+export function sendCompanyMessage(token, body, channel) {
+  return request("/api/messages/", { method: "POST", token, body: { body, channel } });
+}
+
+export function markCompanyThreadRead(token) {
+  return request("/api/messages/read/", { method: "POST", token });
+}
+
+export function fetchAdminHealth(token) {
+  return request("/api/admin/health/", { token });
+}
+
+export function saveCompanyStatus(token, business, status) {
+  return request(`/api/admin/businesses/${business}/`, { method: "PATCH", token, body: { status } });
+}
+
+// Clearing a badge in one go, for when there are too many to open one by one.
+// None of these delete anything: they only mark what is already there as read.
+export function markAllMyAnnouncementsRead(token) {
+  return request("/api/me/announcements/read-all/", { method: "POST", token });
+}
+
+export function markAllMyCalendarRead(token) {
+  return request("/api/me/calendar/read-all/", { method: "POST", token });
+}
+
+export function markAllAdminThreadsRead(token) {
+  return request("/api/admin/messages/read-all/", { method: "POST", token });
 }

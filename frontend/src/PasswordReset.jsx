@@ -37,7 +37,7 @@ export function ForgotPasswordPage() {
         <input id="reset-identifier" value={identifier} onChange={(event) => setIdentifier(event.target.value)} autoComplete="username" maxLength={254} required autoFocus />
         <button className="button button-coral" type="submit" disabled={busy}>{busy ? "Sending…" : "Email reset link →"}</button>
       </fieldset>}
-      <Link className="auth-secondary-link" to="/#sign-in">Back to sign in</Link>
+      <Link className="auth-secondary-link" to="/signin">Back to sign in</Link>
     </form>
   </main>;
 }
@@ -80,7 +80,7 @@ export function ResetPasswordPage() {
       {error && <p className="message error" role="alert">{error}</p>}
       {done ? <>
         <p className="message success" role="status">Your password has been reset. You can now sign in.</p>
-        <Link className="button button-coral" to="/#sign-in">Continue to sign in →</Link>
+        <Link className="button button-coral" to="/signin">Continue to sign in →</Link>
       </> : !missingLink && <fieldset className="auth-fields" disabled={busy}>
         <label htmlFor="reset-new-password">New password</label>
         <input id="reset-new-password" type="password" value={fields.new_password} onChange={(event) => setFields({ ...fields, new_password: event.target.value })} autoComplete="new-password" minLength={8} maxLength={128} required autoFocus />

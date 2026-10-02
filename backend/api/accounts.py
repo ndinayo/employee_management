@@ -16,6 +16,9 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import (OpenApiExample, OpenApiParameter, OpenApiResponse,
+                                   extend_schema, extend_schema_field, extend_schema_view)
 from rest_framework import serializers, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -32,7 +35,28 @@ from .models import (AccountProfile, Announcement, AnnouncementRead, Attendance,
                      CalendarEvent, CalendarEventRead, Contract, ContractTerminationRequest, Employee,
                      InvitationEmailSettings, LeaveBalance, LeaveRequest)
 from .permissions import can_manage, is_admin
+from .schema import (RESPONSE_400, RESPONSE_401, RESPONSE_403_WORKSPACE, AccountSerializer,
+                     AuthenticatedAccountSerializer, DetailSerializer,
+                     EmailSettingsResponseSerializer, MyAttendanceStateSerializer,
+                     MyLeaveOverviewSerializer, TokenPairSerializer, with_errors)
 from .serializers import ContractTerminationSerializer, LeaveBalanceSerializer
+
+# Documentation-only helpers. None of this takes part in handling a request.
+RECORD_ID = OpenApiParameter(
+    name="pk", type=OpenApiTypes.INT, location=OpenApiParameter.PATH, required=True,
+    description="The record's numeric id.",
+)
+RESPONSE_429 = OpenApiResponse(
+    response=DetailSerializer,
+    description="Rate limit reached for this client address.",
+    examples=[OpenApiExample("Throttled", value={
+        "detail": "Request was throttled. Expected available in 3600 seconds."})],
+)
+
+
+def workspace_responses(success, **kwargs):
+    """Error responses for the employee workspace, where 403 means not yet approved."""
+    return with_errors(success, forbidden=RESPONSE_403_WORKSPACE, **kwargs)
 
 
 def employee_record(user):
@@ -124,7 +148,10 @@ class SignupSerializer(serializers.ModelSerializer):
         name = validated_data.pop("business_name", "")
         validated_data.pop("password_confirm")
         user = get_user_model().objects.create_user(**validated_data)
-        business = Business.objects.create(name=name) if role == "employer" else None
+        # A company that signed itself up has not been verified by the platform
+        # owner yet. It is a queue for the administrator, not a lock: the
+        # workspace stays open exactly as before.
+        business = Business.objects.create(name=name, status="pending") if role == "employer" else None
         AccountProfile.objects.create(user=user, role=role, business=business)
         return user
 
@@ -137,6 +164,39 @@ class PasswordResetThrottle(AnonRateThrottle):
     rate = "10/hour"
 
 
+@extend_schema(
+    tags=["Authentication"],
+    summary="Create an account",
+    description=(
+        "Self-service sign-up. Choose `employer` to create a business workspace (then "
+        "`business_name` is required), or `employee` to create a sign-in account that an "
+        "employer can later attach to an employee record (then `business_name` must be "
+        "omitted).\n\n"
+        "On success a JWT pair is issued immediately, so no separate call to `/api/token/` is "
+        "needed. The password is checked against Django's password validators.\n\n"
+        "Rate limited to 20 requests per hour per client address."
+    ),
+    request=SignupSerializer,
+    responses={
+        201: AuthenticatedAccountSerializer,
+        400: RESPONSE_400,
+        429: RESPONSE_429,
+    },
+    examples=[
+        OpenApiExample(
+            "Employer", request_only=True,
+            value={"username": "kigali-books", "email": "owner@kigali-books.example",
+                   "password": "S0me-strong-passphrase", "password_confirm": "S0me-strong-passphrase",
+                   "role": "employer", "business_name": "Kigali Books Ltd"},
+        ),
+        OpenApiExample(
+            "Employee", request_only=True,
+            value={"username": "amina", "email": "amina.uwase@example.com",
+                   "password": "S0me-strong-passphrase", "password_confirm": "S0me-strong-passphrase",
+                   "role": "employee"},
+        ),
+    ],
+)
 class SignupView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -159,6 +219,21 @@ class PasswordResetRequestSerializer(serializers.Serializer):
     identifier = serializers.CharField(max_length=254, trim_whitespace=True)
 
 
+@extend_schema(
+    tags=["Authentication"],
+    summary="Request a password reset link",
+    description=(
+        "Send either a username or an email address as `identifier`. A reset link pointing at "
+        "the frontend is emailed to every matching active account that has an email address.\n\n"
+        "The response is deliberately identical whether or not an account matched, so it cannot "
+        "be used to discover which addresses are registered. Links expire after one hour. "
+        "Rate limited to 10 requests per hour per client address."
+    ),
+    request=PasswordResetRequestSerializer,
+    responses={200: DetailSerializer, 400: RESPONSE_400, 429: RESPONSE_429},
+    examples=[OpenApiExample("By email", request_only=True,
+                             value={"identifier": "owner@kigali-books.example"})],
+)
 class PasswordResetRequestView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -212,6 +287,18 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         return attrs
 
 
+@extend_schema(
+    tags=["Authentication"],
+    summary="Set a new password from a reset link",
+    description=(
+        "`uid` and `token` come from the query string of the emailed link "
+        "(`/reset-password?uid=...&token=...`). An invalid or expired link is reported under "
+        "`token`. A successful reset also clears `must_change_password`.\n\n"
+        "Rate limited to 10 requests per hour per client address."
+    ),
+    request=PasswordResetConfirmSerializer,
+    responses={200: DetailSerializer, 400: RESPONSE_400, 429: RESPONSE_429},
+)
 class PasswordResetConfirmView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -231,6 +318,13 @@ class PasswordResetConfirmView(APIView):
         return Response({"detail": "Your password has been reset. You can now sign in."})
 
 
+@extend_schema(
+    tags=["Account"],
+    summary="Who am I",
+    description="The signed-in account, its role, and the flags the frontend uses to decide "
+                "which workspace to show. Call this first after obtaining a token.",
+    responses={200: AccountSerializer, 401: RESPONSE_401},
+)
 class AccountView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -264,6 +358,38 @@ class EmailSettingsSerializer(serializers.Serializer):
         required=False, allow_blank=True, trim_whitespace=True, max_length=200, write_only=True)
 
 
+@extend_schema(tags=["Account"])
+@extend_schema_view(
+    get=extend_schema(
+        summary="Read the shared invitation sender",
+        description="Employers only. One SMTP sender serves the whole platform; "
+                    "`can_manage_email_settings` is false when another business already owns it.",
+        responses={200: EmailSettingsResponseSerializer, 401: RESPONSE_401,
+                   403: OpenApiResponse(response=DetailSerializer,
+                                        description="Only an employer can set up invitation email.")},
+    ),
+    patch=extend_schema(
+        summary="Configure the shared invitation sender",
+        description=(
+            "Employers only. Saves the sender **only if a test message can actually be "
+            "delivered** with it, so a bad App Password is rejected with 400 rather than "
+            "stored. For Gmail, `email_host_password` must be an App Password.\n\n"
+            "Sending an empty `email_host_user` turns invitation email off. Omitting "
+            "`email_host_password` keeps the password already stored."
+        ),
+        request=EmailSettingsSerializer,
+        responses={200: EmailSettingsResponseSerializer, 400: RESPONSE_400, 401: RESPONSE_401,
+                   403: OpenApiResponse(
+                       response=DetailSerializer,
+                       description="Not an employer, or invitation email is owned by another business.")},
+        examples=[OpenApiExample(
+            "Gmail App Password", request_only=True,
+            value={"email_host": "smtp.gmail.com", "email_port": 587, "email_use_tls": True,
+                   "email_host_user": "hr@kigali-books.example",
+                   "email_host_password": "abcd efgh ijkl mnop"},
+        )],
+    ),
+)
 class EmailSettingsView(APIView):
     """Let an employer send invitations from their own Gmail account."""
     permission_classes = [IsAuthenticated]
@@ -336,6 +462,36 @@ class EmailOrUsernameTokenSerializer(TokenObtainPairSerializer):
         return super().validate(attrs)
 
 
+@extend_schema(
+    tags=["Authentication"],
+    # SimpleJWT leaves permission_classes empty, so say outright that this
+    # endpoint needs no credentials rather than letting it be inferred.
+    auth=[{}],
+    summary="Obtain a JWT pair (sign in)",
+    description=(
+        "Send `username` and `password`. The `username` field also accepts an **email "
+        "address**, because employees never choose a username - their account is created for "
+        "them. If one email somehow belongs to several accounts, the password disambiguates "
+        "them; if it still cannot, sign in with the username instead.\n\n"
+        "Paste the returned `access` token into the **Authorize** dialog at the top of this "
+        "page to try the protected endpoints."
+    ),
+    responses={
+        200: TokenPairSerializer,
+        400: RESPONSE_400,
+        401: OpenApiResponse(
+            response=DetailSerializer,
+            description="The credentials did not match an active account.",
+            examples=[OpenApiExample("Rejected", value={
+                "detail": "No active account found with the given credentials"})]),
+    },
+    examples=[
+        OpenApiExample("By username", request_only=True,
+                       value={"username": "kigali-books", "password": "S0me-strong-passphrase"}),
+        OpenApiExample("By email", request_only=True,
+                       value={"username": "amina.uwase@example.com", "password": "S0me-strong-passphrase"}),
+    ],
+)
 class TokenView(TokenObtainPairView):
     serializer_class = EmailOrUsernameTokenSerializer
 
@@ -363,6 +519,24 @@ class PasswordChangeSerializer(serializers.Serializer):
         return attrs
 
 
+@extend_schema(
+    tags=["Account"],
+    summary="Change your own password",
+    description=(
+        "Requires the current password. The new password must differ from it and pass "
+        "Django's password validators.\n\n"
+        "This is the endpoint an invited account uses to clear `must_change_password`. A fresh "
+        "JWT pair is returned so the client is not left holding a token minted against the "
+        "temporary password - replace the stored tokens with these."
+    ),
+    request=PasswordChangeSerializer,
+    responses={200: AuthenticatedAccountSerializer, 400: RESPONSE_400, 401: RESPONSE_401},
+    examples=[OpenApiExample(
+        "Replace a temporary password", request_only=True,
+        value={"current_password": "Tmp-4h7Kq2", "new_password": "S0me-strong-passphrase",
+               "new_password_confirm": "S0me-strong-passphrase"},
+    )],
+)
 class PasswordChangeView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -394,9 +568,11 @@ class MyProfileSerializer(serializers.ModelSerializer):
     photo = serializers.ImageField(write_only=True, required=False)
     photo_name = serializers.SerializerMethodField()
 
+    @extend_schema_field(OpenApiTypes.STR)
     def get_business_name(self, obj):
         return obj.business.name if obj.business_id else ""
 
+    @extend_schema_field(OpenApiTypes.STR)
     def get_photo_name(self, obj):
         return obj.photo.name.rsplit("/", 1)[-1] if obj.photo else ""
 
@@ -417,6 +593,28 @@ class MyProfileSerializer(serializers.ModelSerializer):
                             "manager_name", "job_description", "is_active"]
 
 
+@extend_schema(tags=["Employee workspace"])
+@extend_schema_view(
+    get=extend_schema(
+        summary="Read your own profile",
+        description="The employee's own record. Job details belong to the employer and are "
+                    "read-only here.",
+        responses=workspace_responses({200: MyProfileSerializer}, bad_request=True),
+    ),
+    patch=extend_schema(
+        summary="Complete your own profile",
+        description="Only the personal half is writable: `phone`, `address`, "
+                    "`emergency_contact` and `photo`. Send `multipart/form-data` to upload a "
+                    "photo (JPG/JPEG/PNG/WEBP, 5 MB or smaller).",
+        request=MyProfileSerializer,
+        responses=workspace_responses({200: MyProfileSerializer}),
+        examples=[OpenApiExample(
+            "Contact details", request_only=True,
+            value={"phone": "+250 788 123 456", "address": "KN 4 Ave, Kigali",
+                   "emergency_contact": "Jean Uwase, +250 788 654 321"},
+        )],
+    ),
+)
 class MyProfileView(APIView):
     """Read and complete your own employee profile."""
     permission_classes = [IsAuthenticated]
@@ -439,6 +637,20 @@ class MyProfileView(APIView):
         return Response(serializer.data)
 
 
+@extend_schema(
+    tags=["Employee workspace"],
+    summary="Download your own profile photo",
+    description="Profile photos are never served from a public media URL; this is the only "
+                "way an employee can read their own.",
+    responses={
+        (200, "image/*"): OpenApiTypes.BINARY,
+        400: RESPONSE_400,
+        401: RESPONSE_401,
+        403: RESPONSE_403_WORKSPACE,
+        404: OpenApiResponse(response=DetailSerializer,
+                             description="No photo is attached, or the stored file is missing."),
+    },
+)
 class MyPhotoView(APIView):
     """Serve the employee their own profile photo, which is otherwise private."""
     permission_classes = [IsAuthenticated]
@@ -461,6 +673,7 @@ class MyPhotoView(APIView):
 class MyAnnouncementSerializer(serializers.ModelSerializer):
     is_read = serializers.SerializerMethodField()
 
+    @extend_schema_field(OpenApiTypes.BOOL)
     def get_is_read(self, obj):
         employee = self.context["employee"]
         return any(item.employee_id == employee.id for item in obj.reads.all())
@@ -470,6 +683,13 @@ class MyAnnouncementSerializer(serializers.ModelSerializer):
         fields = ["id", "title", "message", "created_by", "published_at", "is_read"]
 
 
+@extend_schema(
+    tags=["Employee workspace"],
+    summary="List announcements for you",
+    description="Every announcement published in your business, newest first, each flagged "
+                "with whether you have already read it.",
+    responses=workspace_responses({200: MyAnnouncementSerializer(many=True)}, bad_request=False),
+)
 class MyAnnouncementsView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -479,6 +699,15 @@ class MyAnnouncementsView(APIView):
         return Response(MyAnnouncementSerializer(rows, many=True, context={"employee": employee}).data)
 
 
+@extend_schema(
+    tags=["Employee workspace"],
+    parameters=[RECORD_ID],
+    summary="Mark an announcement as read",
+    description="Idempotent: marking an already-read announcement simply returns it again. "
+                "Takes no request body.",
+    request=None,
+    responses=workspace_responses({200: MyAnnouncementSerializer}, bad_request=False),
+)
 class MyAnnouncementReadView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -492,6 +721,55 @@ class MyAnnouncementReadView(APIView):
             announcement, context={"employee": employee}).data)
 
 
+@extend_schema(
+    tags=["Employee workspace"],
+    summary="Mark every announcement as read",
+    description="Clears the whole announcements badge in one call, for when there are too "
+                "many to open one by one. Idempotent, takes no request body, and returns the "
+                "full list as it now stands. Nothing is deleted: the announcements stay, they "
+                "are simply no longer new to you.",
+    request=None,
+    responses=workspace_responses({200: MyAnnouncementSerializer(many=True)}, bad_request=False),
+)
+class MyAnnouncementReadAllView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        employee = require_signed_contract(employee_record(request.user))
+        rows = Announcement.objects.filter(business=employee.business).prefetch_related("reads")
+        already = set(AnnouncementRead.objects.filter(employee=employee).values_list(
+            "announcement_id", flat=True))
+        AnnouncementRead.objects.bulk_create(
+            [AnnouncementRead(announcement=row, employee=employee)
+             for row in rows if row.pk not in already],
+            ignore_conflicts=True)
+        rows = Announcement.objects.filter(business=employee.business).prefetch_related("reads")
+        return Response(MyAnnouncementSerializer(
+            rows, many=True, context={"employee": employee}).data)
+
+
+class MyCalendarEventSerializer(serializers.ModelSerializer):
+    is_read = serializers.SerializerMethodField()
+
+    @extend_schema_field(OpenApiTypes.BOOL)
+    def get_is_read(self, obj):
+        employee = self.context["employee"]
+        return any(item.employee_id == employee.id for item in obj.reads.all())
+
+    class Meta:
+        model = CalendarEvent
+        fields = ["id", "title", "category", "date", "end_date", "start_time", "end_time",
+                  "location", "description", "created_by", "created_at", "is_read"]
+
+
+@extend_schema(
+    tags=["Employee workspace"],
+    summary="List calendar events for you",
+    description="Company calendar events in your business that are either open to everyone "
+                "or that you were invited to, in date order, each flagged with whether you "
+                "have already read it.",
+    responses=workspace_responses({200: MyCalendarEventSerializer(many=True)}, bad_request=False),
+)
 class MyCalendarView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -503,19 +781,15 @@ class MyCalendarView(APIView):
         return Response(MyCalendarEventSerializer(events, many=True, context={"employee": employee}).data)
 
 
-class MyCalendarEventSerializer(serializers.ModelSerializer):
-    is_read = serializers.SerializerMethodField()
-
-    def get_is_read(self, obj):
-        employee = self.context["employee"]
-        return any(item.employee_id == employee.id for item in obj.reads.all())
-
-    class Meta:
-        model = CalendarEvent
-        fields = ["id", "title", "category", "date", "end_date", "start_time", "end_time",
-                  "location", "description", "created_by", "created_at", "is_read"]
-
-
+@extend_schema(
+    tags=["Employee workspace"],
+    parameters=[RECORD_ID],
+    summary="Mark a calendar event as read",
+    description="Idempotent, and only works for an event you were invited to. Takes no "
+                "request body.",
+    request=None,
+    responses=workspace_responses({200: MyCalendarEventSerializer}, bad_request=False),
+)
 class MyCalendarEventReadView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -531,6 +805,35 @@ class MyCalendarEventReadView(APIView):
         return Response(MyCalendarEventSerializer(event, context={"employee": employee}).data)
 
 
+@extend_schema(
+    tags=["Employee workspace"],
+    summary="Mark every calendar event as read",
+    description="Clears the whole calendar badge in one call. Idempotent, takes no request "
+                "body, and returns your events as they now stand. The events themselves are "
+                "untouched.",
+    request=None,
+    responses=workspace_responses({200: MyCalendarEventSerializer(many=True)}, bad_request=False),
+)
+class MyCalendarReadAllView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        employee = require_signed_contract(employee_record(request.user))
+        visible = CalendarEvent.objects.filter(business=employee.business).filter(
+            Q(all_employees=True) | Q(invited_employees=employee)).distinct()
+        already = set(CalendarEventRead.objects.filter(employee=employee).values_list(
+            "event_id", flat=True))
+        CalendarEventRead.objects.bulk_create(
+            [CalendarEventRead(event=row, employee=employee)
+             for row in visible if row.pk not in already],
+            ignore_conflicts=True)
+        events = CalendarEvent.objects.filter(business=employee.business).filter(
+            Q(all_employees=True) | Q(invited_employees=employee)
+        ).distinct().prefetch_related("reads")
+        return Response(MyCalendarEventSerializer(
+            events, many=True, context={"employee": employee}).data)
+
+
 class MyAttendanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Attendance
@@ -543,6 +846,35 @@ class AttendanceClockSerializer(serializers.Serializer):
     time = serializers.TimeField()
 
 
+@extend_schema(tags=["Employee workspace"])
+@extend_schema_view(
+    get=extend_schema(
+        summary="Read your clock state",
+        description="Returns the shift you are currently clocked into if there is one "
+                    "(including a night shift that began yesterday), otherwise today.",
+        responses=workspace_responses({200: MyAttendanceStateSerializer}, bad_request=False),
+    ),
+    post=extend_schema(
+        summary="Clock in or out",
+        description=(
+            "`action` is `check_in` or `check_out`, `shift` is `day` or `night`, and `time` is "
+            "the wall-clock time to record in the server time zone.\n\n"
+            "One check-in and one check-out per shift. You cannot start a second shift while "
+            "another is still open, clock in before your joining date, or clock in on a day "
+            "covered by approved leave. A night-shift check-out earlier than its check-in is "
+            "treated as the next morning. `hours_worked` is computed on check-out and capped "
+            "at 24."
+        ),
+        request=AttendanceClockSerializer,
+        responses=workspace_responses({200: MyAttendanceStateSerializer}),
+        examples=[
+            OpenApiExample("Check in", request_only=True,
+                           value={"action": "check_in", "shift": "day", "time": "08:30:00"}),
+            OpenApiExample("Check out", request_only=True,
+                           value={"action": "check_out", "shift": "day", "time": "17:00:00"}),
+        ],
+    ),
+)
 class MyAttendanceView(APIView):
     """Let a linked employee clock in and out once per local workday."""
     permission_classes = [IsAuthenticated]
@@ -642,6 +974,8 @@ class MyAttendanceView(APIView):
 class MyLeaveRequestSerializer(serializers.ModelSerializer):
     days_requested = serializers.SerializerMethodField()
 
+    @extend_schema_field(serializers.FloatField(
+        help_text="Monday-Friday days in the period, excluding your business's holidays."))
     def get_days_requested(self, obj):
         return leave_management.leave_days(obj.employee, obj.start_date, obj.end_date)
 
@@ -675,6 +1009,30 @@ class MyLeaveRequestSerializer(serializers.ModelSerializer):
         read_only_fields = ["status", "decision_notes", "requested_at", "decided_at", "decided_by"]
 
 
+@extend_schema(tags=["Employee workspace"])
+@extend_schema_view(
+    get=extend_schema(
+        summary="Read your leave balances and requests",
+        description="This year's four allocations (annual, sick, maternity, unpaid), created "
+                    "on first read if they are missing, plus all of your own leave requests.",
+        responses=workspace_responses({200: MyLeaveOverviewSerializer}, bad_request=False),
+    ),
+    post=extend_schema(
+        summary="Request leave",
+        description=(
+            "Created as `pending` and emailed to the employer. The period must start today or "
+            "later, stay within one calendar year, not precede your joining date, contain at "
+            "least one working day, and not overlap another pending or approved request."
+        ),
+        request=MyLeaveRequestSerializer,
+        responses=workspace_responses({201: MyLeaveRequestSerializer}),
+        examples=[OpenApiExample(
+            "A week of annual leave", request_only=True,
+            value={"leave_type": "annual", "start_date": "2026-12-21",
+                   "end_date": "2026-12-25", "reason": "Family holiday"},
+        )],
+    ),
+)
 class MyLeaveView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -706,6 +1064,23 @@ class MyLeaveView(APIView):
         return Response(MyLeaveRequestSerializer(request_record).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(tags=["Employee workspace"], parameters=[RECORD_ID])
+@extend_schema_view(
+    patch=extend_schema(
+        summary="Change your pending leave request",
+        description="Only a request still in `pending` can be changed; the employer is "
+                    "emailed about the update. The same date rules as creation apply.",
+        request=MyLeaveRequestSerializer,
+        responses=workspace_responses({200: MyLeaveRequestSerializer}),
+    ),
+    delete=extend_schema(
+        summary="Cancel your pending leave request",
+        description="Only a request still in `pending` can be cancelled; the employer is "
+                    "emailed about the cancellation.",
+        responses=workspace_responses(
+            {204: OpenApiResponse(description="Cancelled. No body.")}),
+    ),
+)
 class MyLeaveDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -740,6 +1115,7 @@ class MyContractSerializer(serializers.ModelSerializer):
     business_name = serializers.CharField(source="employee.business.name", read_only=True)
     termination = serializers.SerializerMethodField()
 
+    @extend_schema_field(ContractTerminationSerializer(allow_null=True))
     def get_termination(self, obj):
         request = obj.termination_requests.order_by("-created_at", "-id").first()
         return ContractTerminationSerializer(request).data if request else None
@@ -754,6 +1130,17 @@ class MyContractSerializer(serializers.ModelSerializer):
         ]
 
 
+@extend_schema(
+    tags=["Employee workspace"],
+    summary="List your contracts",
+    description=(
+        "Contracts that have been sent to you or that you have already signed, newest first. "
+        "Unlike the rest of this section, this endpoint does **not** require an approved "
+        "contract - it is how a new employee finds the contract waiting to be signed. An "
+        "account with no employee record gets an empty list rather than an error."
+    ),
+    responses={200: MyContractSerializer(many=True), 401: RESPONSE_401},
+)
 class MyContractsView(APIView):
     """Contracts sent to the signed-in employee."""
     permission_classes = [IsAuthenticated]
@@ -800,6 +1187,30 @@ class ContractSignatureSerializer(serializers.Serializer):
         return value
 
 
+@extend_schema(
+    tags=["Employee workspace"],
+    parameters=[RECORD_ID],
+    summary="Sign a contract",
+    description=(
+        "Signs a contract that is awaiting your signature. `signer_name` must match your "
+        "recorded full name (case-insensitively), `accepted` must be true, and "
+        "`signature_data` must be a drawn PNG as a data URL - at most 300 KB and 2000 by 800 "
+        "pixels.\n\n"
+        "The contract text is re-fingerprinted before signing, so a contract edited after it "
+        "was sent is refused and must be resent. Signing records the time and your IP address, "
+        "sets the contract to `active`, and leaves `worker_approval_status: pending` until the "
+        "employer approves you."
+    ),
+    request=ContractSignatureSerializer,
+    responses={200: MyContractSerializer, 400: RESPONSE_400, 401: RESPONSE_401,
+               403: OpenApiResponse(response=DetailSerializer,
+                                    description="Not your contract, or no employee record is linked.")},
+    examples=[OpenApiExample(
+        "Signature", request_only=True,
+        value={"signer_name": "Amina Uwase", "accepted": True,
+               "signature_data": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg..."},
+    )],
+)
 class MyContractSignView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -843,6 +1254,23 @@ class ContractTerminationRequestSerializer(serializers.Serializer):
     proposed_last_working_date = serializers.DateField()
 
 
+@extend_schema(
+    tags=["Employee workspace"],
+    parameters=[RECORD_ID],
+    summary="Ask to end your contract",
+    description="Opens a termination request in `pending` for the employer to approve or "
+                "reject. Only an active, signed, approved contract qualifies, the date cannot "
+                "be in the past, and only one request may be open at a time.",
+    request=ContractTerminationRequestSerializer,
+    responses={201: MyContractSerializer, 400: RESPONSE_400, 401: RESPONSE_401,
+               403: OpenApiResponse(response=DetailSerializer,
+                                    description="Not your contract, or no employee record is linked.")},
+    examples=[OpenApiExample(
+        "Resignation", request_only=True,
+        value={"reason": "I have accepted a role closer to home.",
+               "proposed_last_working_date": "2026-11-30"},
+    )],
+)
 class MyContractTerminationView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -872,6 +1300,18 @@ class MyContractTerminationView(APIView):
         return Response(MyContractSerializer(contract).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(
+    tags=["Employee workspace"],
+    parameters=[RECORD_ID],
+    summary="Acknowledge an employer termination",
+    description="Confirms a termination the **employer** started. The contract becomes "
+                "`terminated_mutual` and its `end_date` moves to the proposed last working "
+                "date. Takes no request body.",
+    request=None,
+    responses={200: MyContractSerializer, 400: RESPONSE_400, 401: RESPONSE_401,
+               403: OpenApiResponse(response=DetailSerializer,
+                                    description="Not your contract, or no employee record is linked.")},
+)
 class MyContractTerminationAcknowledgeView(APIView):
     permission_classes = [IsAuthenticated]
 

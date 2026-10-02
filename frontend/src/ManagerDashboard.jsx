@@ -6,8 +6,9 @@ import GoogleMeetPage from "./GoogleMeetPage";
 import ModalDialog from "./components/ModalDialog";
 import { useConfirm } from "./components/ConfirmDialog";
 import { Link, NavLink, Navigate, Route, Routes } from "react-router";
-import { approveContractWorker, decideContractTermination, deleteRecord, downloadContract, fetchEmailSettings, fetchEmployeePhoto, fetchRecords, fetchReports, initiateContractTermination, markSalaryPaid, requestNewContractSignature, resendContractSignatureEmail, saveEmailSettings, saveRecord, sendContractForSignature } from "./api";
-import { isWeekend, label, longDate, modules, money, shiftDate, today } from "./managerConfig";
+import { approveContractWorker, decideContractTermination, deleteRecord, downloadContract, fetchCompanyThread, fetchEmailSettings, fetchEmployeePhoto, fetchRecords, fetchReports, initiateContractTermination, markCompanyThreadRead, markSalaryPaid, requestNewContractSignature, resendContractSignatureEmail, saveEmailSettings, saveRecord, sendCompanyMessage, sendContractForSignature } from "./api";
+import Conversation from "./components/Conversation";
+import { isWeekend, label, longDate, modules, money, shiftDate, today, upcomingEvents } from "./managerConfig";
 
 function saveBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -216,7 +217,8 @@ function ManagerCalendarPage({ token, events, onChange, onAuthError }) {
     try {
       const saved = await saveRecord(token, "calendar-events", payload);
       onChange("calendar-events", saved);
-      setNotice("Calendar event added for employees.");
+      setNotice("");
+      return saved;
     } catch (err) { setError(err.message); onAuthError(err); throw err; }
     finally { setBusy(false); }
   }
@@ -881,10 +883,50 @@ function SettingsPage({ token, account, onAccountChange, onAuthError }) {
   </>;
 }
 
+// The company's side of the platform conversation. Opening the page clears the
+// badge; the administrator's replies arrive here and by email.
+function PlatformMessagesPage({ token, onAuthError }) {
+  const [thread, setThread] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    markCompanyThreadRead(token).then((data) => {
+      if (!cancelled) { setThread(data); setError(""); }
+    }).catch((err) => {
+      if (!cancelled) { setError(err.message); onAuthError(err); }
+    });
+    const timer = window.setInterval(() => fetchCompanyThread(token).then((data) => {
+      if (!cancelled) setThread(data);
+    }).catch(() => {}), 15000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [token, onAuthError]);
+
+  async function send(body, channel) {
+    const sent = await sendCompanyMessage(token, body, channel);
+    setThread((current) => current ? { ...current, messages: [...current.messages, sent] } : current);
+  }
+
+  return <>
+    <div className="section-heading"><div><p className="eyebrow dark-eyebrow">PLATFORM</p><h2>Messages</h2><p>Write to the team that runs Employee Management. Choose whether it lands in their dashboard or in their inbox: a message appears here in their workspace and sends no email, an email goes to their inbox and stays out of their dashboard. Your employees are not part of this conversation.</p></div></div>
+    {error && <p className="message error" role="alert">{error}</p>}
+    <section className="panel records-panel">
+      {!thread ? <p className="empty-state" role="status">Loading conversation…</p> : <Conversation
+        thread={thread}
+        mine={false}
+        onSend={send}
+        placeholder="Write to the platform team…"
+        empty="No messages yet. Write the first one."
+      />}
+    </section>
+  </>;
+}
+
 export default function ManagerDashboard({ token, account, onLogout, onAuthError, onAccountChange }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [unreadMessages, setUnreadMessages] = useState(0);
   useEffect(() => {
     let cancelled = false;
     Promise.all(Object.keys(modules).map(async (resource) => [resource, await fetchRecords(token, resource)])).then((entries) => {
@@ -913,6 +955,16 @@ export default function ManagerDashboard({ token, account, onLogout, onAuthError
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [token, onAuthError]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const refreshMessages = () => fetchCompanyThread(token).then((thread) => {
+      if (!cancelled) setUnreadMessages(thread.unread);
+    }).catch(() => {});
+    refreshMessages();
+    const timer = window.setInterval(refreshMessages, 15000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [token]);
+
   function updateRecords(resource, record, deleted = false) {
     setData((current) => ({ ...current, [resource]: deleted ? current[resource].filter((row) => row.id !== record.id) : current[resource].some((row) => row.id === record.id) ? current[resource].map((row) => row.id === record.id ? record : row) : [record, ...current[resource]] }));
   }
@@ -922,6 +974,7 @@ export default function ManagerDashboard({ token, account, onLogout, onAuthError
       + (row.signature_status === "signed" && row.worker_approval_status !== "approved" ? 1 : 0)
       + (row.termination?.initiated_by === "employee" && row.termination.status === "pending" ? 1 : 0), 0),
     leave: (data.leave || []).filter((row) => row.status === "pending").length,
+    "calendar-events": upcomingEvents(data["calendar-events"] || []).length,
   } : {};
 
   return <>
@@ -929,7 +982,8 @@ export default function ManagerDashboard({ token, account, onLogout, onAuthError
       <div className="workspace-identity"><strong>{account?.display_name || account?.username}</strong><span>{account?.role_label || "Employer"}</span></div>
       <nav className="sidebar-nav" aria-label="Manager navigation">
         <NavLink end to="/dashboard" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Overview</NavLink>
-        {Object.entries(modules).map(([key, config]) => <NavLink key={key} to={`/dashboard/${key}`} className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}><span>{key === "attendance" ? "Attendance / Shifts" : config.title}</span>{attention[key] > 0 && <span className="attention-badge" aria-label={`${attention[key]} items need attention`}>{attention[key]}</span>}</NavLink>)}
+        {Object.entries(modules).map(([key, config]) => <NavLink key={key} to={`/dashboard/${key}`} className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}><span>{key === "attendance" ? "Attendance / Shifts" : config.title}</span>{attention[key] > 0 && <span className="attention-badge" aria-label={key === "calendar-events" ? `${attention[key]} events in the next 7 days` : `${attention[key]} items need attention`}>{attention[key]}</span>}</NavLink>)}
+        <NavLink to="/dashboard/messages" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}><span>Messages</span>{unreadMessages > 0 && <span className="attention-badge" aria-label={`${unreadMessages} unread messages`}>{unreadMessages}</span>}</NavLink>
         <NavLink to="/dashboard/google-meet" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Google Meet</NavLink>
         <NavLink to="/dashboard/reports" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Reports</NavLink>
         <NavLink to="/dashboard/settings" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Settings</NavLink>
@@ -939,6 +993,7 @@ export default function ManagerDashboard({ token, account, onLogout, onAuthError
       {error ? <div className="panel records-panel"><p className="message error" role="alert">{error}</p><button type="button" className="button button-coral" onClick={() => { setError(""); setRetry((value) => value + 1); }}>Retry loading</button></div> : !data ? <p className="empty-state" role="status">Loading manager workspace…</p> : <Routes>
         <Route index element={<ReportsPage key="overview" token={token} onAuthError={onAuthError} overview />} />
         <Route path="reports" element={<ReportsPage key="reports" token={token} onAuthError={onAuthError} />} />
+        <Route path="messages" element={<PlatformMessagesPage token={token} onAuthError={onAuthError} />} />
         <Route path="google-meet" element={<GoogleMeetPage token={token} employees={data.employees || []} onChange={updateRecords} />} />
         <Route path="settings" element={<SettingsPage token={token} account={account} onAccountChange={onAccountChange} onAuthError={onAuthError} />} />
         {Object.keys(modules).map((resource) => <Route key={resource} path={resource} element={modules[resource].custom

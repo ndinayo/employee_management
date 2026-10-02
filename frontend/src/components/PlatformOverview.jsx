@@ -1,0 +1,270 @@
+import { useEffect, useState } from "react";
+import { Link } from "react-router";
+import { fetchAdminHealth, fetchAdminOverview } from "../api";
+
+// Every figure on this page comes from /api/admin/overview/ and /api/admin/health/,
+// counted from live rows. Nothing here is a fixed value.
+
+function shortDate(value) {
+  if (!value) return "Never";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function sinceDays(value) {
+  if (!value) return "";
+  const days = Math.floor((Date.now() - new Date(value).getTime()) / 86400000);
+  if (Number.isNaN(days)) return "";
+  if (days <= 0) return "today";
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+function Tile({ title, value, note, to, tone }) {
+  const body = <>
+    <span>{title}</span>
+    <strong className={tone ? `tone-${tone}` : undefined}>{value}</strong>
+    {note && <small>{note}</small>}
+  </>;
+  if (!to) return <div className="summary-card">{body}</div>;
+  return <Link className="summary-card summary-card-link" to={to} aria-label={`Open ${title.toLowerCase()}`}>{body}</Link>;
+}
+
+function CompanyList({ title, description, rows, empty, stamp }) {
+  return <section className="panel platform-panel">
+    <h3>{title}</h3>
+    <p className="panel-note">{description}</p>
+    {!rows.length ? <p className="empty-state">{empty}</p> : <ul className="platform-list">
+      {rows.map((row) => <li key={row.id}>
+        <Link to={`/admin/companies?company=${row.id}`}>
+          <strong>{row.name}</strong>
+          <small>
+            {row.employer_username || "No employer account"}
+            {" · "}
+            {row.employee_count} {row.employee_count === 1 ? "employee" : "employees"}
+          </small>
+        </Link>
+        <span className="platform-stamp">{stamp(row)}</span>
+      </li>)}
+    </ul>}
+  </section>;
+}
+
+// A plain inline chart: no library, no external request, and it reads the same
+// series the API returns.
+function GrowthChart({ points }) {
+  const width = 640;
+  const height = 180;
+  const padding = { top: 12, right: 12, bottom: 26, left: 32 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const peak = Math.max(1, ...points.map((point) => point.companies));
+  const step = plotWidth / Math.max(points.length, 1);
+  const barWidth = Math.max(6, step * 0.55);
+
+  return <div className="growth-chart">
+    <svg viewBox={`0 0 ${width} ${height}`} role="img"
+         aria-label={`Companies added each month: ${points.map((point) => `${point.label} ${point.companies}`).join(", ")}`}>
+      {[0, 0.5, 1].map((fraction) => {
+        const y = padding.top + plotHeight * (1 - fraction);
+        return <g key={fraction}>
+          <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} className="grid-line" />
+          <text x={padding.left - 7} y={y + 4} className="axis-label" textAnchor="end">
+            {Math.round(peak * fraction)}
+          </text>
+        </g>;
+      })}
+      {points.map((point, index) => {
+        const barHeight = (point.companies / peak) * plotHeight;
+        const x = padding.left + index * step + (step - barWidth) / 2;
+        return <g key={point.month}>
+          <rect x={x} y={padding.top + plotHeight - barHeight} width={barWidth}
+                height={Math.max(barHeight, point.companies ? 2 : 0)} rx="3" className="growth-bar">
+            <title>{`${point.label}: ${point.companies} added, ${point.total} total`}</title>
+          </rect>
+          <text x={x + barWidth / 2} y={height - 8} className="axis-label" textAnchor="middle">
+            {point.label}
+          </text>
+        </g>;
+      })}
+    </svg>
+  </div>;
+}
+
+const HEALTH_LABELS = {
+  operational: "Operational", degraded: "Degraded", down: "Down",
+  not_configured: "Not set up", unknown: "Unknown",
+};
+
+function HealthRow({ name, service }) {
+  const status = service?.status || "unknown";
+  return <div className="health-row">
+    <div>
+      <strong>{name}</strong>
+      <small>{service?.detail || "No detail reported."}</small>
+    </div>
+    <span className={`status-badge health-${status}`}>{HEALTH_LABELS[status] || status}</span>
+  </div>;
+}
+
+export default function PlatformOverview({ token, onAuthError }) {
+  const [data, setData] = useState(null);
+  const [health, setHealth] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => fetchAdminOverview(token).then((result) => {
+      if (!cancelled) { setData(result); setError(""); }
+    }).catch((err) => {
+      if (!cancelled) { setError(err.message); onAuthError(err); }
+    });
+    load();
+    const timer = window.setInterval(load, 30000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [token, onAuthError]);
+
+  // Health touches the disk and the database, so it is polled far less often
+  // than the counts.
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => fetchAdminHealth(token).then((result) => {
+      if (!cancelled) setHealth(result);
+    }).catch(() => {});
+    load();
+    const timer = window.setInterval(load, 120000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [token]);
+
+  if (error && !data) return <>
+    <div className="section-heading"><div><p className="eyebrow dark-eyebrow">PLATFORM</p><h2>Platform overview</h2></div></div>
+    <p className="message error" role="alert">{error}</p>
+  </>;
+  if (!data) return <>
+    <div className="section-heading"><div><p className="eyebrow dark-eyebrow">PLATFORM</p><h2>Platform overview</h2></div></div>
+    <p className="empty-state" role="status">Loading the platform…</p>
+  </>;
+
+  const { scale, lifecycle, usage, issues, messages } = data;
+  const growth = usage.growth_percent;
+  const attention = issues.dormant_employers + issues.suspended_employers
+    + issues.companies_without_employer + issues.failed_invitations
+    + (issues.email_delivery_configured ? 0 : 1);
+
+  return <>
+    <div className="section-heading"><div>
+      <p className="eyebrow dark-eyebrow">PLATFORM</p>
+      <h2>Platform overview</h2>
+      <p>Every company on the platform and the accounts that run them. Each company&apos;s own
+        records stay inside its employer&apos;s workspace.</p>
+    </div></div>
+    {error && <p className="message error" role="alert">{error}</p>}
+
+    <h3 className="platform-heading">Platform scale</h3>
+    <div className="summary-row platform-tiles">
+      <Tile title="Companies" value={scale.companies} to="/admin/companies"
+            note={`${scale.companies_this_month} added this month`} />
+      <Tile title="Active companies" value={scale.active_companies} to="/admin/companies?status=active" />
+      <Tile title="Awaiting verification" value={scale.pending_companies} to="/admin/companies?status=pending"
+            tone={scale.pending_companies ? "warn" : undefined} />
+      <Tile title="Suspended companies" value={scale.suspended_companies} to="/admin/companies?status=suspended"
+            tone={scale.suspended_companies ? "bad" : undefined} />
+      <Tile title="Employers" value={scale.employers} to="/admin/employers" />
+      <Tile title="Employees" value={scale.employees} to="/admin/employees"
+            note={`${scale.active_employees} active`} />
+    </div>
+
+    <h3 className="platform-heading">Platform usage</h3>
+    <div className="summary-row platform-tiles">
+      <Tile title="Companies active today" value={usage.active_today} />
+      <Tile title="Active this week" value={usage.active_week} note="Last 7 days" />
+      <Tile title="Active this month" value={usage.active_month} note="Last 30 days" />
+      <Tile title="Total platform users" value={usage.total_users} note="Every role" />
+      <Tile title="Growth on last month" value={`${growth > 0 ? "+" : ""}${growth}%`}
+            tone={growth > 0 ? "good" : growth < 0 ? "bad" : undefined}
+            note={`${usage.companies_this_month} this month, ${usage.companies_last_month} last`} />
+    </div>
+    <section className="panel platform-panel">
+      <h3>New companies each month</h3>
+      <p className="panel-note">The last 12 months, counted from registration dates.</p>
+      <GrowthChart points={usage.growth} />
+    </section>
+
+    <h3 className="platform-heading">Company lifecycle</h3>
+    <div className="platform-grid">
+      <CompanyList title="Recent registrations" description="The newest companies on the platform."
+                   rows={lifecycle.recent_registrations} empty="No companies yet."
+                   stamp={(row) => shortDate(row.created_at)} />
+      <CompanyList title="Awaiting verification"
+                   description="Signed themselves up and have not been verified yet."
+                   rows={lifecycle.awaiting_activation} empty="Nothing waiting."
+                   stamp={(row) => shortDate(row.created_at)} />
+      <CompanyList title="Recently suspended" description="Their workspace is closed."
+                   rows={lifecycle.recently_suspended} empty="No suspended companies."
+                   stamp={(row) => shortDate(row.status_changed_at || row.created_at)} />
+      <CompanyList title={`Quiet for over ${lifecycle.dormant_days} days`}
+                   description="Signed in once, but not for a long time."
+                   rows={lifecycle.dormant} empty="Every company has been active recently."
+                   stamp={(row) => sinceDays(row.last_login_at)} />
+    </div>
+
+    <h3 className="platform-heading">Account issues{attention > 0 && <span className="attention-badge">{attention}</span>}</h3>
+    <div className="summary-row platform-tiles">
+      <Tile title="Employers never signed in" value={issues.dormant_employers}
+            to="/admin/employers?status=dormant" tone={issues.dormant_employers ? "warn" : undefined} />
+      <Tile title="Suspended employers" value={issues.suspended_employers}
+            to="/admin/employers?status=suspended" tone={issues.suspended_employers ? "bad" : undefined} />
+      <Tile title="Disabled accounts" value={issues.disabled_accounts} note="Any role" />
+      <Tile title="Companies with no employer" value={issues.companies_without_employer}
+            to="/admin/companies" tone={issues.companies_without_employer ? "warn" : undefined} />
+      <Tile title="Failed invitations" value={issues.failed_invitations}
+            tone={issues.failed_invitations ? "bad" : undefined}
+            note={`${issues.companies_with_failed_invitations} ${issues.companies_with_failed_invitations === 1 ? "company" : "companies"} affected`} />
+    </div>
+    {!issues.email_delivery_configured && <p className="message error" role="status">
+      Email delivery is not set up, so invitations and emailed messages cannot leave the platform.
+    </p>}
+
+    <h3 className="platform-heading">Communication</h3>
+    <div className="summary-row platform-tiles">
+      <Tile title="Unread messages" value={messages.unread} to="/admin/messages"
+            tone={messages.unread ? "warn" : undefined} />
+      <Tile title="Awaiting your reply" value={messages.unresolved} to="/admin/messages"
+            tone={messages.unresolved ? "warn" : undefined} />
+    </div>
+    <section className="panel platform-panel">
+      <h3>Recent conversations</h3>
+      <p className="panel-note">The latest exchange with each company.</p>
+      {!messages.recent.length ? <p className="empty-state">No conversations yet.</p>
+        : <ul className="platform-list">
+          {messages.recent.map((row) => <li key={row.business}>
+            <Link to={`/admin/messages/${row.business}`}>
+              <strong>{row.business_name}{row.awaiting_reply && <span className="attention-badge">1</span>}</strong>
+              <small>{row.from_admin ? "You: " : ""}{row.body}</small>
+            </Link>
+            <span className="platform-stamp">{shortDate(row.created_at)}</span>
+          </li>)}
+        </ul>}
+    </section>
+
+    <h3 className="platform-heading">Platform health</h3>
+    <section className="panel platform-panel">
+      {!health ? <p className="empty-state" role="status">Checking services…</p> : <>
+        <div className="health-list">
+          <HealthRow name="API" service={health.api} />
+          <HealthRow name="Database" service={health.database} />
+          <HealthRow name="Email service" service={health.email} />
+          <HealthRow name="Storage" service={health.storage} />
+        </div>
+        <dl className="health-meta">
+          <div><dt>Version</dt><dd>{health.application.version}</dd></div>
+          <div><dt>Environment</dt><dd>{health.application.environment}</dd></div>
+          <div><dt>Django</dt><dd>{health.application.django}</dd></div>
+          <div><dt>Python</dt><dd>{health.application.python}</dd></div>
+          <div><dt>Host</dt><dd>{health.application.platform}</dd></div>
+          <div><dt>Time zone</dt><dd>{health.application.time_zone}</dd></div>
+        </dl>
+      </>}
+    </section>
+  </>;
+}

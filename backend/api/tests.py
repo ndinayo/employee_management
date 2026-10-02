@@ -277,17 +277,18 @@ class ManagerWorkflowTests(APITestCase):
 
     def test_leave_review_overlap_and_attendance_conflict(self):
         data = {"employee": self.employee.id, "start_date": "2026-09-24", "end_date": "2026-09-25", "leave_type": "annual"}
-        result = self.client.post("/api/leave/", data)
-        self.assertEqual(result.status_code, 201, result.data)
-        self.assertEqual(result.data["status"], "pending")
         self.assertEqual(self.client.post("/api/leave/", data).status_code, 400)
-        url = f'/api/leave/{result.data["id"]}/'
+        leave = LeaveRequest.objects.create(employee=self.employee, start_date="2026-09-24", end_date="2026-09-25")
+        self.assertEqual(leave.status, "pending")
+        url = f"/api/leave/{leave.id}/"
         approved = self.client.patch(url, {"status": "approved", "decision_notes": "Approved by manager"}, format="json")
         self.assertEqual(approved.status_code, 200, approved.data)
         attendance = self.client.post("/api/attendance/", {"employee": self.employee.id, "date": "2026-09-24", "status": "absent"})
         self.assertEqual(attendance.status_code, 400)
-        self.assertEqual(self.client.patch(url, {"status": "rejected"}, format="json").status_code, 200)
-        self.assertEqual(self.client.post("/api/leave/", data).status_code, 201)
+        overlapping = LeaveRequest.objects.create(employee=self.employee, start_date="2026-09-25", end_date="2026-09-25")
+        overlap_url = f"/api/leave/{overlapping.id}/"
+        self.assertEqual(self.client.patch(overlap_url, {"status": "approved"}, format="json").status_code, 400)
+        self.assertEqual(self.client.patch(overlap_url, {"status": "rejected"}, format="json").status_code, 200)
 
     def test_leave_cannot_be_approved_over_existing_attendance(self):
         Attendance.objects.create(employee=self.employee, date="2026-09-24", hours_worked=8)

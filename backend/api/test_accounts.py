@@ -411,6 +411,59 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertTrue(opened.data["is_read"])
         self.assertEqual(CalendarEventRead.objects.filter(employee=employee).count(), 1)
 
+    def test_employee_can_clear_every_announcement_and_event_at_once(self):
+        """When there are too many to open one by one, one call clears the badge
+        without deleting anything."""
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
+        for index in range(3):
+            self.client.post("/api/announcements/", {
+                "title": f"Notice {index}", "message": "Please read."}, format="json")
+            self.client.post("/api/calendar-events/", {
+                "title": f"Event {index}", "category": "meeting", "date": "2026-10-12",
+                "start_time": "09:00", "end_time": "10:00"}, format="json")
+
+        self.client.force_authenticate(employee.account.user)
+        self.assertEqual(sum(1 for row in self.client.get("/api/me/announcements/").data
+                             if not row["is_read"]), 3)
+        self.assertEqual(sum(1 for row in self.client.get("/api/me/calendar/").data
+                             if not row["is_read"]), 3)
+
+        news = self.client.post("/api/me/announcements/read-all/")
+        self.assertEqual(news.status_code, 200, news.data)
+        self.assertEqual(len(news.data), 3)
+        self.assertTrue(all(row["is_read"] for row in news.data))
+
+        events = self.client.post("/api/me/calendar/read-all/")
+        self.assertEqual(events.status_code, 200, events.data)
+        self.assertEqual(len(events.data), 3)
+        self.assertTrue(all(row["is_read"] for row in events.data))
+
+        # Nothing was removed, and a second call is harmless.
+        self.assertEqual(Announcement.objects.count(), 3)
+        self.assertEqual(CalendarEvent.objects.count(), 3)
+        self.assertEqual(AnnouncementRead.objects.filter(employee=employee).count(), 3)
+        self.assertEqual(CalendarEventRead.objects.filter(employee=employee).count(), 3)
+        self.assertEqual(len(self.client.post("/api/me/announcements/read-all/").data), 3)
+        self.assertEqual(len(self.client.post("/api/me/calendar/read-all/").data), 3)
+
+    def test_clearing_everything_only_clears_your_own_badge(self):
+        self.hire()
+        first = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(first)
+        self.hire(email="bruno@example.com", first_name="Bruno")
+        second = Employee.objects.get(email="bruno@example.com")
+        self.signed_contract(second)
+        self.client.post("/api/announcements/", {
+            "title": "Everyone", "message": "Please read."}, format="json")
+
+        self.client.force_authenticate(first.account.user)
+        self.client.post("/api/me/announcements/read-all/")
+
+        self.client.force_authenticate(second.account.user)
+        self.assertFalse(self.client.get("/api/me/announcements/").data[0]["is_read"])
+
     def test_calendar_event_can_target_selected_employees(self):
         self.hire()
         invited = Employee.objects.get(email="aline@example.com")

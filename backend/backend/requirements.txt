@@ -14,3 +14,4 @@ dj-database-url>=3,<4
 whitenoise>=6.9,<7
 gunicorn>=23,<26
 django-storages[s3]>=1.14.6,<2
+drf-spectacular[sidecar]>=0.28,<1

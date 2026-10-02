@@ -113,7 +113,7 @@ def provision_account(employee):
 
 
 def sign_in_url():
-    return f"{settings.FRONTEND_URL}/#sign-in" if settings.FRONTEND_URL else "your employer's Employee Management site"
+    return f"{settings.FRONTEND_URL}/signin" if settings.FRONTEND_URL else "your employer's Employee Management site"
 
 
 def shared_smtp():
@@ -432,4 +432,41 @@ def send_password_reset(user, reset_url):
         return bool(sent)
     except Exception:
         logger.exception("Password reset email to user %s failed", user.pk)
+        return False
+
+
+def send_platform_message(message, recipients):
+    """Email a platform message to the other side of the conversation.
+
+    Only used for messages the sender chose to send by email; a dashboard
+    message is never emailed. Delivery is best effort, and the sender keeps
+    their own copy either way, so nothing written is ever lost to a mail
+    problem.
+    """
+    if not recipients:
+        return False
+    connection = mail_connection(message.business)
+    if connection is None:
+        return False
+    company = message.business.name
+    if message.from_admin:
+        subject = "Message from the Employee Management team"
+        opening = f"The platform team sent {company} a message:"
+        destination = f"{settings.FRONTEND_URL}/dashboard/messages" if settings.FRONTEND_URL else sign_in_url()
+    else:
+        subject = f"Message from {company}"
+        opening = f"{company} sent the platform team a message:"
+        destination = f"{settings.FRONTEND_URL}/admin/messages/{message.business_id}" if settings.FRONTEND_URL else sign_in_url()
+    body = (
+        f"{opening}\n\n"
+        f"{message.body}\n\n"
+        f"Reply from your dashboard: {destination}\n\n"
+        "You are receiving this because you are on this conversation in Employee Management.\n"
+    )
+    try:
+        sent = send_mail(subject, body, from_address(message.business), recipients,
+                         fail_silently=False, connection=connection)
+        return bool(sent)
+    except Exception:
+        logger.exception("Platform message %s could not be emailed", message.pk)
         return False

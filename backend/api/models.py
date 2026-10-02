@@ -24,8 +24,18 @@ def money_field(**kwargs):
 
 
 class Business(models.Model):
+    # Where this company stands with the platform owner. "pending" is a company
+    # that signed itself up and has not been verified yet; it is a queue for the
+    # administrator and does not restrict the workspace. "suspended" does: it
+    # deactivates the company's employer sign-ins.
+    STATUSES = [("pending", "Awaiting verification"), ("active", "Active"),
+                ("suspended", "Suspended")]
+
     name = models.CharField(max_length=200)
     created_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=10, default="active", choices=STATUSES, db_index=True)
+    # When the status last moved, so the dashboard can show what changed recently.
+    status_changed_at = models.DateTimeField(null=True, blank=True)
     # Optional per-business SMTP. When set, invitation email is sent from here
     # instead of the server console (which never reaches a real inbox).
     email_host = models.CharField(max_length=200, blank=True)
@@ -81,6 +91,10 @@ class AccountProfile(models.Model):
 class Employee(models.Model):
     # Existing records remain in the original managers' workspace (business=NULL).
     business = models.ForeignKey(Business, on_delete=models.PROTECT, null=True, blank=True)
+    # True when a sign-in was created but the invitation email did not go out.
+    # Counted platform-wide so the administrator can see mail problems; no
+    # employee detail is reported from it.
+    invite_email_failed = models.BooleanField(default=False)
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     email = models.EmailField()
@@ -331,3 +345,35 @@ def discard_replaced_photo(sender, instance, **kwargs):
 @receiver(pre_save, sender=Contract)
 def discard_replaced_document(sender, instance, **kwargs):
     discard_replaced_file(sender, instance, "document")
+
+
+class PlatformMessage(models.Model):
+    """A message between the platform administrator and one company.
+
+    Conversations are per company: every employer of that company talks to the
+    administrator in the same thread, so a company's history survives a change
+    of employer account. Employee matters are not carried here.
+    """
+
+    business = models.ForeignKey(Business, on_delete=models.CASCADE, related_name="platform_messages")
+    # Kept for attribution only. The thread belongs to the business, so losing
+    # the author to a deleted account must not take the message with it.
+    sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                               blank=True, related_name="platform_messages_sent")
+    from_admin = models.BooleanField()
+    # How the sender chose to deliver it. "message" stays inside the dashboard
+    # and nothing is emailed; "email" goes to the recipient's inbox only and
+    # never appears in their thread. The sender keeps a record of both.
+    channel = models.CharField(max_length=10, default="message", choices=[
+        ("message", "Message"), ("email", "Email")])
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Set when the other side opens the thread, which is what clears the badge.
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["business", "created_at"])]
+
+    def __str__(self):
+        return f"{'Admin' if self.from_admin else self.business.name} message {self.pk}"

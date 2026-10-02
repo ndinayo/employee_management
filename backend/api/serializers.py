@@ -1,6 +1,8 @@
 from django.core.validators import FileExtensionValidator
 from django.db import transaction
 from django.utils.html import strip_tags
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from django.utils import timezone
 
@@ -10,6 +12,7 @@ from .models import (Employee, Contract, ContractTerminationRequest, Attendance,
                      LeaveBalance, LeaveRequest, Holiday, Announcement,
                      CalendarEvent, Salary, Payroll)
 from .permissions import business_id_for
+from .schema import InviteResultSerializer, LatestContractSerializer
 
 
 def serializer_business_id(serializer):
@@ -31,12 +34,16 @@ class EmployeeSerializer(serializers.ModelSerializer):
     account_status = serializers.SerializerMethodField()
     invite = serializers.SerializerMethodField()
 
+    @extend_schema_field(serializers.ChoiceField(
+        choices=["none", "pending_first_sign_in", "active"],
+        help_text="Whether this employee has a sign-in account yet, and whether they have used it."))
     def get_account_status(self, obj):
         account = getattr(obj, "account", None)
         if not account:
             return "none"
         return "pending_first_sign_in" if account.must_change_password else "active"
 
+    @extend_schema_field(InviteResultSerializer(allow_null=True))
     def get_invite(self, obj):
         # Only ever populated on the response to the request that hired them.
         return getattr(obj, "_invite", None)
@@ -49,9 +56,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("An employee with this email already exists in your business.")
         return value
 
+    @extend_schema_field(OpenApiTypes.STR)
     def get_photo_name(self, obj):
         return obj.photo.name.rsplit("/", 1)[-1] if obj.photo else ""
 
+    @extend_schema_field(LatestContractSerializer(allow_null=True))
     def get_latest_contract(self, obj):
         # Highest pk wins so a later upload still wins even if it reused the
         # joining date. Walk the prefetch cache instead of issuing a new query.
@@ -120,6 +129,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
         else:
             detail = ("Email sending is not set up, so no message was sent. "
                       f"Add a Gmail App Password in Settings, or give {employee.first_name} these sign-in details yourself.")
+        if employee.invite_email_failed != (not sent):
+            employee.invite_email_failed = not sent
+            employee.save(update_fields=["invite_email_failed"])
         invite = {"created": True, "email_sent": sent, "username": user.username, "detail": detail}
         if not sent:
             # Nothing reached the employee, so the employer is the only way in.
@@ -195,9 +207,11 @@ class ContractSerializer(ManagerRecordSerializer):
     employee_email = serializers.EmailField(source="employee.email", read_only=True)
     termination = serializers.SerializerMethodField()
 
+    @extend_schema_field(OpenApiTypes.STR)
     def get_document_name(self, obj):
         return obj.document.name.rsplit("/", 1)[-1] if obj.document else ""
 
+    @extend_schema_field(ContractTerminationSerializer(allow_null=True))
     def get_termination(self, obj):
         request = obj.termination_requests.order_by("-created_at", "-id").first()
         return ContractTerminationSerializer(request).data if request else None
@@ -272,6 +286,8 @@ class AttendanceSerializer(ManagerRecordSerializer):
 class LeaveSerializer(ManagerRecordSerializer):
     days_requested = serializers.SerializerMethodField()
 
+    @extend_schema_field(serializers.FloatField(
+        help_text="Monday-Friday days in the period, excluding this business's holidays."))
     def get_days_requested(self, obj):
         return leave_management.leave_days(obj.employee, obj.start_date, obj.end_date)
 
@@ -347,12 +363,18 @@ class LeaveBalanceSerializer(ManagerRecordSerializer):
             obj._balance_summary = leave_management.balance_summary(obj)
         return obj._balance_summary
 
+    @extend_schema_field(serializers.FloatField(
+        help_text="Working days already taken under approved requests this year."))
     def get_used_days(self, obj):
         return self.summary(obj)["used_days"]
 
+    @extend_schema_field(serializers.FloatField(
+        allow_null=True, help_text="`days_allocated` minus `used_days`, or null for unpaid leave."))
     def get_remaining_days(self, obj):
         return self.summary(obj)["remaining_days"]
 
+    @extend_schema_field(serializers.BooleanField(
+        help_text="True for unpaid leave, which is not capped by an allocation."))
     def get_unlimited(self, obj):
         return self.summary(obj)["unlimited"]
 

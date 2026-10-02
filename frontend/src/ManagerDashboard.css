@@ -29,6 +29,47 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .records-filters input { max-width: 250px; }
 .records-filters select { width: auto; }
 .record-count { color: var(--olive); font-weight: 700; }
+
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* Platform conversation: the administrator and one company, both directions. */
+.conversation { display: flex; flex-direction: column; gap: 16px; }
+.chat-log { display: flex; flex-direction: column; gap: 14px; max-height: 52vh; padding: 4px; overflow-y: auto; }
+.chat-message { max-width: min(560px, 85%); padding: 12px 15px; border: 1px solid #e5e5dc; border-radius: 13px; background: var(--cream); }
+.chat-message.own { align-self: flex-end; border-color: #e8cfc6; background: #fdf1ec; }
+.chat-meta { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; margin: 0 0 6px; color: var(--olive); font-size: 12px; }
+.chat-meta strong { color: var(--burgundy); }
+.chat-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-receipt { margin: 6px 0 0; color: var(--olive); font-size: 11px; font-weight: 700; text-align: right; }
+.chat-receipt.failed { color: #8b2e21; }
+.chat-channel { margin-right: 8px; padding: 2px 7px; border-radius: 999px; background: #efe7d8; color: #6b5522; font-size: 10px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase; }
+.channel-choice { display: flex; flex-wrap: wrap; gap: 10px; width: 100%; margin: 0; padding: 0; border: 0; }
+.channel-choice legend { padding: 0; margin-bottom: 8px; color: var(--olive); font-size: 12px; font-weight: 700; }
+.channel-choice label { display: flex; flex: 1 1 240px; gap: 10px; margin: 0; padding: 11px 13px; border: 1px solid #d8d8cb; border-radius: 10px; background: var(--cream); cursor: pointer; }
+.channel-choice label:has(input:checked) { border-color: var(--burgundy); background: #fdf1ec; }
+.channel-choice input { width: 18px; min-height: 18px; margin-top: 2px; accent-color: var(--burgundy); }
+.channel-choice strong { display: block; color: var(--burgundy); font-size: 13px; }
+.channel-choice small { display: block; margin-top: 2px; color: var(--olive); font-size: 12px; }
+.chat-composer { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.chat-composer textarea { width: 100%; padding: 12px 14px; border: 1px solid #d8d8cb; border-radius: 10px; background: white; font: inherit; resize: vertical; }
+
+/* Company list down the side of the administrator's message page. */
+.thread-layout { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 20px; align-items: start; }
+.thread-list { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
+.thread-link { display: block; padding: 12px 14px; border: 1px solid #e5e5dc; border-radius: 10px; background: var(--cream); color: inherit; text-decoration: none; text-align: left; font: inherit; }
+.thread-link:hover, .thread-link:focus-visible { border-color: var(--coral); }
+.thread-link.selected { border-color: var(--burgundy); background: #fdf1ec; }
+.thread-link strong { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--burgundy); }
+.thread-link small { display: block; margin-top: 4px; color: var(--olive); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .thread-layout { grid-template-columns: 1fr; }
+  .thread-list { max-height: 240px; }
+}
+
+/* In-page "go back" control for dashboard sub-pages. */
+.page-back { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 18px; padding: 9px 16px; border: 1px solid #d8d8cb; border-radius: 999px; background: var(--cream); color: var(--burgundy); font-size: 13px; font-weight: 700; transition: border-color .18s ease, background .18s ease; }
+.page-back:hover, .page-back:focus-visible { border-color: var(--coral); background: #fff; }
 .row-actions { flex-wrap: wrap; min-width: 90px; gap: 12px 8px; }
 .row-actions button { padding: 3px; text-align: left; }
 .status-badge { display: inline-block; padding: 5px 9px; border-radius: 20px; background: #e8e5de; font-size: 11px; white-space: nowrap; }
@@ -281,3 +322,78 @@ body:has(.form-modal[open]) { overflow: hidden; }
 }
 .optional-fields[open] > summary::before { content: "2"; }
 .optional-fields[open] > summary { margin-bottom: 20px; }
+
+/* --- Platform owner's dashboard ------------------------------------------- */
+.platform-heading { display: flex; align-items: center; gap: 10px; margin: 32px 0 14px; color: var(--burgundy); font-size: 15px; letter-spacing: .3px; }
+.platform-heading:first-of-type { margin-top: 8px; }
+.platform-tiles { flex-wrap: wrap; }
+.platform-tiles .summary-card { flex: 1 1 180px; min-width: 165px; }
+.platform-tiles .summary-card span { font-size: 13px; }
+.platform-tiles .summary-card small { display: block; margin-top: 6px; color: var(--olive); font-size: 11px; font-weight: 700; }
+.platform-tiles .summary-card strong.tone-good { color: #245b32; }
+.platform-tiles .summary-card strong.tone-warn { color: #8a6610; }
+.platform-tiles .summary-card strong.tone-bad { color: #8b2e21; }
+
+.platform-panel { margin-bottom: 20px; padding: 22px 24px; }
+.platform-panel h3 { margin: 0; color: var(--burgundy); font-size: 15px; }
+.panel-note { margin: 5px 0 16px; color: var(--olive); font-size: 13px; }
+.platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+.platform-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.platform-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid #ece9df; }
+.platform-list li:last-child { border-bottom: 0; }
+.platform-list a { min-width: 0; color: inherit; text-decoration: none; }
+.platform-list a:hover strong, .platform-list a:focus-visible strong { color: var(--coral); }
+.platform-list strong { display: flex; align-items: center; gap: 8px; color: var(--burgundy); font-size: 14px; }
+.platform-list small { display: block; margin-top: 2px; color: var(--olive); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.platform-stamp { flex-shrink: 0; color: var(--olive); font-size: 12px; font-weight: 700; white-space: nowrap; }
+
+.growth-chart { width: 100%; overflow-x: auto; }
+.growth-chart svg { display: block; width: 100%; min-width: 420px; height: auto; }
+.growth-chart .grid-line { stroke: #e4e1d6; stroke-width: 1; }
+.growth-chart .axis-label { fill: #6d6f5e; font-size: 10px; font-weight: 700; }
+.growth-chart .growth-bar { fill: var(--burgundy); }
+.growth-chart .growth-bar:hover { fill: var(--coral); }
+
+.health-list { display: flex; flex-direction: column; gap: 2px; }
+.health-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 0; border-bottom: 1px solid #ece9df; }
+.health-row:last-child { border-bottom: 0; }
+.health-row strong { display: block; color: var(--burgundy); font-size: 14px; }
+.health-row small { display: block; margin-top: 2px; color: var(--olive); font-size: 12px; }
+.health-operational { background: #d8edda; color: #245b32; }
+.health-degraded, .health-not_configured { background: #f5e9c8; color: #725516; }
+.health-down { background: #ffe2da; color: #8b2e21; }
+.health-unknown { background: #e8e5de; color: #4a4a40; }
+.health-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; margin: 20px 0 0; padding-top: 18px; border-top: 1px solid #ece9df; }
+.health-meta dt { color: var(--olive); font-size: 11px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; }
+.health-meta dd { margin: 4px 0 0; color: var(--burgundy); font-size: 13px; overflow-wrap: anywhere; }
+
+/* --- Calendar: month / events tabs and the events list -------------------- */
+.calendar-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.calendar-tab { display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border: 1px solid #d8d8cb; border-radius: 999px; background: var(--cream); color: var(--burgundy); font-size: 13px; font-weight: 700; }
+.calendar-tab:hover { border-color: var(--coral); }
+.calendar-tab.selected { border-color: var(--burgundy); background: var(--burgundy); color: var(--cream); }
+.calendar-tab.selected .attention-badge { background: var(--coral); color: #2b191e; }
+
+.event-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.event-list li { display: block; }
+.event-row { display: grid; grid-template-columns: 150px 1fr auto; align-items: center; gap: 16px; width: 100%; padding: 13px 16px; border: 1px solid #e5e5dc; border-radius: 11px; background: var(--cream); font: inherit; text-align: left; }
+.event-row:hover, .event-row:focus-visible { border-color: var(--coral); }
+.event-row.unread { border-left: 3px solid #e4bd3e; background: #fffdf3; }
+.event-when strong { display: block; color: var(--burgundy); font-size: 13px; }
+.event-when small, .event-what small { display: block; margin-top: 3px; color: var(--olive); font-size: 12px; }
+.event-what { min-width: 0; }
+.event-what strong { display: flex; align-items: center; gap: 7px; color: var(--burgundy); font-size: 15px; }
+.event-what small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-tags { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.event-tags small { color: var(--olive); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.created-confirmation .message { margin-bottom: 18px; }
+
+@media (max-width: 700px) {
+  .event-row { grid-template-columns: 1fr; gap: 8px; }
+  .event-tags { flex-direction: row; align-items: center; justify-content: space-between; width: 100%; }
+}
+
+/* A heading can carry more than one action now (clear, then add), so keep the
+   buttons grouped on the right instead of letting space-between split them. */
+.section-heading > .button:first-of-type { margin-left: auto; }
+.section-heading > .button + .button { margin-left: 10px; }
