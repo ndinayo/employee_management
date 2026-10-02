@@ -38,8 +38,8 @@ def available_username(email):
             return candidate
 
 
-def email_is_taken(email):
-    return get_user_model().objects.filter(email__iexact=email).exists()
+def email_is_taken(email, exclude_pk=None):
+    return get_user_model().objects.filter(email__iexact=email).exclude(pk=exclude_pk).exists()
 
 
 def reclaim_email(email, employee=None):

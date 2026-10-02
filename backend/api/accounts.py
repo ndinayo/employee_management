@@ -126,6 +126,11 @@ class SignupSerializer(serializers.ModelSerializer):
         model = get_user_model()
         fields = ["username", "email", "password", "password_confirm", "role", "business_name"]
 
+    def validate_email(self, value):
+        if onboarding.email_is_taken(value):
+            raise serializers.ValidationError("An account already uses this email address. Sign in instead.")
+        return value
+
     def validate(self, attrs):
         errors = {}
         if attrs["password"] != attrs["password_confirm"]:

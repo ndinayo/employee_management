@@ -120,10 +120,12 @@ class SeedCommandTests(TestCase):
         legacy = User.objects.create_superuser("admin", "", "Cedar!Lantern-47-River")
         older = platform_admin("ndinayoeric1", "ndinayoeric1@gmail.com")
         with mock.patch.dict("os.environ", WITH_PASSWORD):
-            self.assertIn("ndinayoeric1 also uses", seed())
+            self.assertIn("belongs to another account", seed())
         legacy.refresh_from_db()
         older.refresh_from_db()
         self.assertEqual(legacy.account_profile.role, "admin")
+        self.assertEqual(legacy.email, "")
+        self.assertEqual(older.email, "ndinayoeric1@gmail.com")
         self.assertEqual((older.username, older.account_profile.role), ("ndinayoeric1", "admin"))
         self.assertTrue(older.check_password("Changed#Later-5521"))
         self.assertEqual(User.objects.count(), 2)

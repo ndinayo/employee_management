@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from api import onboarding
 from api.models import AccountProfile
 
 USERNAME = "admin"
@@ -67,9 +68,6 @@ class Command(BaseCommand):
             f"Existing account {user.username!r} promoted to platform admin. "
             + (f"Its password was set from {PASSWORD_VARIABLE}; remove that variable now."
                if password else "Its password was not changed.")))
-        others = [other.username for other in email_admins if other.pk != user.pk]
-        if others:
-            self.stdout.write(f"Note: {', '.join(others)} also uses {EMAIL} and remains a platform admin.")
 
     def align_identity(self, user):
         changed = []
@@ -77,8 +75,12 @@ class Command(BaseCommand):
             user.username = USERNAME
             changed.append("username")
         if user.email != EMAIL:
-            user.email = EMAIL
-            changed.append("email")
+            if onboarding.email_is_taken(EMAIL, exclude_pk=user.pk):
+                self.stdout.write(f"Note: {EMAIL} belongs to another account, so {user.username!r} keeps its "
+                                  "current email. Run check_duplicate_emails to see that account.")
+            else:
+                user.email = EMAIL
+                changed.append("email")
         return changed
 
     def configured_password(self, User, required):

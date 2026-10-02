@@ -17,6 +17,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 from PIL import Image
 
+from . import user_emails
 from .models import (AccountProfile, Announcement, AnnouncementRead, Attendance, Business,
                      CalendarEvent, CalendarEventRead, Contract, Employee, Holiday,
                      InvitationEmailSettings, LeaveRequest, Payroll, Salary)
@@ -954,6 +955,7 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertEqual(reused.status_code, 400)
 
     def test_duplicate_email_sends_one_identified_reset_link_per_account(self):
+        user_emails.drop_unique_index()  # older databases can still hold duplicate emails
         second = User.objects.create_user("second-account", "boss@example.com", self.password)
         AccountProfile.objects.create(user=second, role="employee")
         mail.outbox = []
@@ -1031,6 +1033,7 @@ class EmployeeOnboardingTests(APITestCase):
         shared = "shared@example.com"
         first_password = "Quartz!River-38-Lamp"
         second_password = "Copper!Forest-64-Star"
+        user_emails.drop_unique_index()  # older databases can still hold duplicate emails
         User.objects.create_user("one", shared, first_password)
         User.objects.create_user("two", shared, second_password)
         self.client.force_authenticate(None)
@@ -1041,6 +1044,7 @@ class EmployeeOnboardingTests(APITestCase):
 
     def test_shared_email_still_requires_username_when_password_is_also_shared(self):
         shared = "shared@example.com"
+        user_emails.drop_unique_index()  # older databases can still hold duplicate emails
         User.objects.create_user("one", shared, self.password)
         User.objects.create_user("two", shared, self.password)
         self.client.force_authenticate(None)

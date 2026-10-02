@@ -311,7 +311,26 @@ python backend/manage.py seed
 ```
 
 It ensures the `Managers` group exists, then runs `ensure_platform_admin` as
-described above. Account roles (`employee`, `employer`,
+described above.
+
+#### One account per email
+
+Sign-in emails are unique, compared case-insensitively; blank emails are
+exempt. Signup, employer creation, employee invitations, `bootstrap_admin` and
+`ensure_platform_admin` all refuse or skip an email that another account
+already uses. A unique database index on `LOWER(email)` enforces it as well.
+Older databases may still contain accounts that share an email. Those are
+never merged or deleted automatically: migration `0029` skips the index while
+they exist, and `start.sh` runs this read-only report on every deploy:
+
+```bash
+python backend/manage.py check_duplicate_emails
+```
+
+It lists each conflicting account (id, username, role, business or employee
+link, status, dates) in the logs. Once none remain, it adds the index. Until
+then, sign-in with a shared email still works whenever the password identifies a
+single account; otherwise sign in with the username. Account roles (`employee`, `employer`,
 `admin`) are built into the code and need no seeding.
 
 ### 8. Install frontend dependencies

@@ -25,6 +25,10 @@ class Command(BaseCommand):
                 raise CommandError("The requested username already belongs to a non-admin account; no account was changed.")
             self.stdout.write("Initial admin already exists; leaving the account unchanged.")
             return
+        if email and user_model.objects.filter(email__iexact=email).exists():
+            # start.sh runs this on every deploy, so a used email skips rather than fails.
+            self.stdout.write("DJANGO_SUPERUSER_EMAIL already belongs to another account; no initial admin was created.")
+            return
         try:
             validate_password(password, user_model(username=username, email=email))
         except ValidationError as error:
