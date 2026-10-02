@@ -29,7 +29,7 @@ Use the origins without quotes, paths, trailing slashes or `#sign-in`. Add anoth
 
 Public signup does not require an initial admin account. If bootstrap admin environment variables are configured, they still must be valid because `start.sh` runs `bootstrap_admin` before Gunicorn. Existing administrator passwords are not changed by signup.
 
-After migrating, `start.sh` also runs `python manage.py seed` on every start. It is idempotent: it ensures the `Managers` group exists and creates the platform super admin (username `admin`) only if it is missing, using `PLATFORM_ADMIN_PASSWORD`. It never changes an existing password. If seeding fails, the logs show the error and a warning, and the server still starts. Remove `PLATFORM_ADMIN_PASSWORD` once the logs show `Platform admin created.`
+After migrating, `start.sh` also runs `python manage.py seed` on every start. It is idempotent: it ensures the `Managers` group exists and makes sure the platform super admin (username `admin`, email `ndinayoeric1@gmail.com`) exists. If an account with that username or email already exists but is not a platform admin, it is promoted once instead of duplicated, and `PLATFORM_ADMIN_PASSWORD`, if set, becomes its password at that moment. Otherwise the account is created with that password. An existing platform admin's password is never changed. If seeding fails, the logs show the error and a warning, and the server still starts. Remove `PLATFORM_ADMIN_PASSWORD` once the logs show `Platform admin created.`
 
 ## 2. Deploy the frontend
 

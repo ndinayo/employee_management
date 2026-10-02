@@ -66,12 +66,46 @@ class SeedCommandTests(TestCase):
         self.assertEqual(existing.email, "ndinayoeric1@gmail.com")
         self.assertTrue(existing.check_password("Changed#Later-5521"))
 
-    def test_refuses_to_promote_a_superuser_without_a_platform_admin_profile(self):
-        User.objects.create_superuser("admin", "", "Cedar!Lantern-47-River")
-        with mock.patch.dict("os.environ", WITH_PASSWORD), self.assertRaises(CommandError):
+    def test_promotes_an_existing_superuser_named_admin_once(self):
+        legacy = User.objects.create_superuser("admin", "", "Cedar!Lantern-47-River")
+        legacy.is_active = False
+        legacy.save()
+        with mock.patch.dict("os.environ", WITH_PASSWORD):
+            self.assertIn("promoted to platform admin", seed())
+        with mock.patch.dict("os.environ", {"PLATFORM_ADMIN_PASSWORD": "Another#Pass-7742"}):
+            self.assertIn("leaving the account unchanged", seed())
+        legacy.refresh_from_db()
+        self.assertEqual(User.objects.get().pk, legacy.pk)
+        self.assertEqual(legacy.email, "ndinayoeric1@gmail.com")
+        self.assertTrue(legacy.is_active and legacy.is_staff and legacy.is_superuser)
+        self.assertEqual(legacy.account_profile.role, "admin")
+        self.assertTrue(legacy.check_password(PASSWORD))
+
+    def test_promotion_without_a_password_keeps_the_existing_one(self):
+        legacy = User.objects.create_user("admin", "", "Cedar!Lantern-47-River")
+        with mock.patch.dict("os.environ", NO_PASSWORD):
+            self.assertIn("password was not changed", seed())
+        legacy.refresh_from_db()
+        self.assertTrue(legacy.check_password("Cedar!Lantern-47-River"))
+        self.assertEqual(legacy.account_profile.role, "admin")
+
+    def test_promotes_an_unlinked_account_that_owns_the_email(self):
+        signed_up = User.objects.create_user("eric", "NdinayoEric1@gmail.com", "Cedar!Lantern-47-River")
+        AccountProfile.objects.create(user=signed_up, role="employee")
+        with mock.patch.dict("os.environ", WITH_PASSWORD):
             seed()
-        self.assertFalse(AccountProfile.objects.exists())
-        self.assertEqual(User.objects.get().email, "")
+        signed_up.refresh_from_db()
+        self.assertEqual((signed_up.username, signed_up.email), ("admin", "ndinayoeric1@gmail.com"))
+        self.assertEqual(signed_up.account_profile.role, "admin")
+        self.assertEqual(AccountProfile.objects.count(), 1)
+
+    def test_weak_password_blocks_promotion_without_changes(self):
+        legacy = User.objects.create_user("admin", "", "Cedar!Lantern-47-River")
+        with mock.patch.dict("os.environ", {"PLATFORM_ADMIN_PASSWORD": "123"}), self.assertRaises(CommandError):
+            seed()
+        legacy.refresh_from_db()
+        self.assertFalse(legacy.is_superuser or AccountProfile.objects.exists())
+        self.assertTrue(legacy.check_password("Cedar!Lantern-47-River"))
 
     def test_refuses_to_promote_an_employer_using_the_email(self):
         employer = User.objects.create_user("boss", "ndinayoeric1@gmail.com", "Cedar!Lantern-47-River")
@@ -82,12 +116,16 @@ class SeedCommandTests(TestCase):
         self.assertEqual((employer.username, employer.account_profile.role), ("boss", "employer"))
         self.assertFalse(employer.is_superuser)
 
-    def test_refuses_when_username_and_email_are_different_accounts(self):
-        User.objects.create_superuser("admin", "", "Cedar!Lantern-47-River")
-        platform_admin("ndinayoeric1", "ndinayoeric1@gmail.com")
-        with mock.patch.dict("os.environ", WITH_PASSWORD), self.assertRaises(CommandError):
-            seed()
-        self.assertTrue(User.objects.filter(username="ndinayoeric1").exists())
+    def test_account_named_admin_wins_when_another_account_has_the_email(self):
+        legacy = User.objects.create_superuser("admin", "", "Cedar!Lantern-47-River")
+        older = platform_admin("ndinayoeric1", "ndinayoeric1@gmail.com")
+        with mock.patch.dict("os.environ", WITH_PASSWORD):
+            self.assertIn("ndinayoeric1 also uses", seed())
+        legacy.refresh_from_db()
+        older.refresh_from_db()
+        self.assertEqual(legacy.account_profile.role, "admin")
+        self.assertEqual((older.username, older.account_profile.role), ("ndinayoeric1", "admin"))
+        self.assertTrue(older.check_password("Changed#Later-5521"))
         self.assertEqual(User.objects.count(), 2)
 
     def test_creating_the_admin_requires_a_valid_password(self):

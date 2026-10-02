@@ -272,22 +272,33 @@ or the process environment) and must pass Django's password validation:
 python backend/manage.py ensure_platform_admin
 ```
 
-The command creates a Django superuser with a platform admin profile when no
-account has that username or email. The password is needed only for that
-first creation. If a platform admin already has the username or the email, it
-is reused rather than duplicated: its username and email are set to the values
-above and its password is never changed. The command refuses, without changing
-anything, when the username and email belong to two different accounts or to an
-account that is not a platform admin. `start.sh` runs it on every deployment
-through `seed`. Remove `PLATFORM_ADMIN_PASSWORD` from the environment once the
-account exists, and never commit its real value.
+The command never creates a second account for this identity. It uses the
+account named `admin` if there is one, otherwise the account with that email
+(preferring one that is already a platform admin):
+
+- **No such account:** it creates a superuser with a platform admin profile.
+  `PLATFORM_ADMIN_PASSWORD` is required.
+- **Already a platform admin:** its username and email are set to the values
+  above. Its password is never changed.
+- **Exists but is not a platform admin** (for example a superuser made by
+  `bootstrap_admin` or `createsuperuser`): it is promoted once. It gets the
+  platform admin role and becomes an active staff superuser with the username
+  and email above. If `PLATFORM_ADMIN_PASSWORD` is set, that becomes its
+  password at this moment only; otherwise its password is kept.
+- **A profile still linked to a company or an employee record:** the command
+  refuses without changing anything, because promoting it would detach that
+  record.
+
+No account is ever deleted. `start.sh` runs this on every deployment through
+`seed`. Remove `PLATFORM_ADMIN_PASSWORD` from the environment once the account
+exists, and never commit its real value.
 
 A third command, `bootstrap_admin`, creates a Django superuser from
 `DJANGO_SUPERUSER_USERNAME`, `DJANGO_SUPERUSER_PASSWORD` and
 `DJANGO_SUPERUSER_EMAIL` if they are set. It never changes an existing account
 and is what `start.sh` runs during deployment. That superuser has no platform
-admin profile, so it cannot use `/api/admin/...`. Do not give it the username
-`admin` or the email above, or `ensure_platform_admin` will refuse to continue.
+admin profile, so it cannot use `/api/admin/...` until `seed` promotes it (only
+if it is named `admin` or uses the email above).
 
 #### Seeding a new deployment
 
