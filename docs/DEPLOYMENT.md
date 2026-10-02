@@ -29,6 +29,8 @@ Use the origins without quotes, paths, trailing slashes or `#sign-in`. Add anoth
 
 Public signup does not require an initial admin account. If bootstrap admin environment variables are configured, they still must be valid because `start.sh` runs `bootstrap_admin` before Gunicorn. Existing administrator passwords are not changed by signup.
 
+After migrating, `start.sh` also runs `python manage.py seed` on every start. It is idempotent: it ensures the `Managers` group exists and creates the platform super admin (username `admin`) only if it is missing, using `PLATFORM_ADMIN_PASSWORD`. It never changes an existing password. If seeding fails, the logs show the error and a warning, and the server still starts. Remove `PLATFORM_ADMIN_PASSWORD` once the logs show `Platform admin created.`
+
 ## 2. Deploy the frontend
 
 Vercel should use `frontend` as its Root Directory. Its committed `vercel.json` runs the build and handles client routes. Set this environment variable for the environment being deployed:

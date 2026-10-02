@@ -79,7 +79,7 @@ employee_management/
 │   ├── manage.py
 │   ├── .env.example                # Copy to backend/.env
 │   ├── build.sh                    # Deployment build
-│   ├── start.sh                    # Deployment start (migrate, then gunicorn)
+│   ├── start.sh                    # Deployment start (migrate, seed, then gunicorn)
 │   ├── backend/
 │   │   ├── settings.py             # Includes the drf-spectacular configuration
 │   │   ├── test_settings.py        # In-memory SQLite, for tests only
@@ -278,8 +278,8 @@ first creation. If a platform admin already has the username or the email, it
 is reused rather than duplicated: its username and email are set to the values
 above and its password is never changed. The command refuses, without changing
 anything, when the username and email belong to two different accounts or to an
-account that is not a platform admin. It does not run automatically during
-deployment. Remove `PLATFORM_ADMIN_PASSWORD` from the environment once the
+account that is not a platform admin. `start.sh` runs it on every deployment
+through `seed`. Remove `PLATFORM_ADMIN_PASSWORD` from the environment once the
 account exists, and never commit its real value.
 
 A third command, `bootstrap_admin`, creates a Django superuser from
@@ -468,8 +468,8 @@ python backend/manage.py collectstatic --noinput
 Based on the configuration committed to this repository.
 
 **Backend (Render).** `backend/build.sh` installs requirements and runs
-`collectstatic`. `backend/start.sh` runs `migrate`, then `bootstrap_admin`, then
-Gunicorn on `$PORT`. Render settings, taken from
+`collectstatic`. `backend/start.sh` runs `migrate`, then `seed`, then
+`bootstrap_admin`, then Gunicorn on `$PORT`. Render settings, taken from
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md):
 
 | Setting | Value |
@@ -485,9 +485,12 @@ contributes its own hostname to `ALLOWED_HOSTS`. `FRONTEND_URL` must be the
 exact frontend origin with no path; it is added to CORS and trusted CSRF
 origins.
 
-To create the platform super admin, add `PLATFORM_ADMIN_PASSWORD`, deploy, and run
-`python manage.py seed` from the Render Shell (see "Seeding a new deployment"
-above). It is not part of `start.sh`, and running it again is harmless.
+To create the platform super admin, add `PLATFORM_ADMIN_PASSWORD` and deploy.
+`start.sh` runs `python manage.py seed` on every start (see "Seeding a new
+deployment" above); it is idempotent, so repeated starts change nothing. If
+seeding fails, the error and a warning appear in the deploy logs and the server
+still starts. Remove `PLATFORM_ADMIN_PASSWORD` once the logs show the account
+was created.
 
 **Frontend (Vercel).** `frontend/vercel.json` sets the build command, output
 directory, and the SPA rewrite that serves `index.html` for client-side routes
