@@ -1,4 +1,4 @@
-"""Create the platform administrator from environment variables if that account is missing."""
+"""Create the platform administrator if that account is missing."""
 import os
 
 from django.contrib.auth import get_user_model
@@ -9,46 +9,52 @@ from django.db import transaction
 
 from api.models import AccountProfile
 
-VARIABLES = ("PLATFORM_ADMIN_USERNAME", "PLATFORM_ADMIN_EMAIL", "PLATFORM_ADMIN_PASSWORD")
+USERNAME = "admin"
+EMAIL = "ndinayoeric1@gmail.com"
+PASSWORD_VARIABLE = "PLATFORM_ADMIN_PASSWORD"
 
 
 class Command(BaseCommand):
-    help = ("Create the super-admin workspace account from PLATFORM_ADMIN_USERNAME, PLATFORM_ADMIN_EMAIL "
-            "and PLATFORM_ADMIN_PASSWORD. Existing accounts are never changed.")
+    help = (f"Create the platform super admin ({USERNAME} / {EMAIL}) if it does not exist, using the "
+            f"{PASSWORD_VARIABLE} environment variable. An existing super admin keeps its password.")
 
     def handle(self, *args, **options):
-        values = {name: os.getenv(name, "").strip() for name in VARIABLES}
-        if not any(values.values()):
-            self.stdout.write("No platform admin requested (PLATFORM_ADMIN_* variables are not set); skipping.")
-            return
-        missing = [name for name, value in values.items() if not value]
-        if missing:
-            raise CommandError("Set PLATFORM_ADMIN_USERNAME, PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD together. "
-                               "Missing: " + ", ".join(missing) + ".")
-        username = values["PLATFORM_ADMIN_USERNAME"]
-        email = values["PLATFORM_ADMIN_EMAIL"]
-        password = os.environ["PLATFORM_ADMIN_PASSWORD"]
-
         User = get_user_model()
-        by_username = User.objects.filter(username__iexact=username).first()
-        by_email = User.objects.filter(email__iexact=email).first()
+        by_username = User.objects.filter(username__iexact=USERNAME).first()
+        by_email = User.objects.filter(email__iexact=EMAIL).first()
         if by_username and by_email and by_username.pk != by_email.pk:
-            raise CommandError("The username and email belong to two different accounts; no account was changed.")
+            raise CommandError(f"The username {USERNAME!r} and the email {EMAIL} belong to two different accounts; "
+                               "no account was changed.")
         user = by_username or by_email
         if user:
             profile = AccountProfile.objects.filter(user=user).first()
-            if profile and profile.role == "admin":
+            if not (profile and profile.role == "admin"):
+                raise CommandError(f"{user.username!r} already uses that username or email but is not a platform "
+                                   "admin; no account was changed.")
+            changed = []
+            if user.username != USERNAME:
+                user.username = USERNAME
+                changed.append("username")
+            if user.email != EMAIL:
+                user.email = EMAIL
+                changed.append("email")
+            if changed:
+                user.save(update_fields=changed)
+                self.stdout.write(f"Platform admin already exists; updated its {' and '.join(changed)}. "
+                                  "The password was not changed.")
+            else:
                 self.stdout.write("Platform admin already exists; leaving the account unchanged.")
-                return
-            raise CommandError("That username or email already belongs to an account that is not a platform admin; "
-                               "no account was changed.")
+            return
 
+        password = os.getenv(PASSWORD_VARIABLE, "")
+        if not password.strip():
+            raise CommandError(f"Set {PASSWORD_VARIABLE} to create the platform admin; no account was created.")
         try:
-            validate_password(password, User(username=username, email=email))
+            validate_password(password, User(username=USERNAME, email=EMAIL))
         except ValidationError as error:
             raise CommandError("Platform admin password did not pass validation: " + " ".join(error.messages))
         with transaction.atomic():
-            user = User.objects.create_superuser(username=username, email=email, password=password)
+            user = User.objects.create_superuser(username=USERNAME, email=EMAIL, password=password)
             AccountProfile.objects.create(user=user, role="admin")
         self.stdout.write(self.style.SUCCESS(
-            "Platform admin created. Remove PLATFORM_ADMIN_PASSWORD from the environment now that it is no longer needed."))
+            f"Platform admin created. Remove {PASSWORD_VARIABLE} from the environment now that it is no longer needed."))

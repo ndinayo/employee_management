@@ -99,7 +99,7 @@ employee_management/
 │   │   ├── schema.py               # Documentation-only schema helpers
 │   │   ├── leave_management.py
 │   │   ├── contract_content.py
-│   │   ├── management/commands/    # bootstrap_admin, ensure_platform_admin
+│   │   ├── management/commands/    # bootstrap_admin, ensure_platform_admin, seed
 │   │   ├── migrations/
 │   │   └── test_*.py, tests.py
 │   └── private_media/              # Created on first upload; not public
@@ -234,7 +234,7 @@ Then edit `backend/.env`:
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` | no | Server-wide invitation sender. Leave blank to let each employer add a Gmail App Password under Settings |
 | `MEDIA_ROOT` | no | Where uploads are stored. Defaults to `backend/private_media` |
 | `STORAGE_BACKEND` | no | `filesystem` (default) or `s3` |
-| `PLATFORM_ADMIN_USERNAME`, `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD` | no | Used only by `ensure_platform_admin` to create the initial platform super admin. See step 7 |
+| `PLATFORM_ADMIN_PASSWORD` | no | Used only by `ensure_platform_admin` / `seed` to create the platform super admin. See step 7 |
 
 `backend/.env` is ignored by Git. Real process environment variables take
 precedence over the file.
@@ -262,33 +262,46 @@ python backend/manage.py createsuperuser
 **A platform super admin**, for the `/api/admin/...` endpoints and the super
 admin dashboard. This requires an `AccountProfile` with `role="admin"`, which
 `createsuperuser` does not create. Either create the profile from the Django
-admin site, or create the initial platform super admin from environment
-variables. Set all three, in `backend/.env` or the process environment:
-
-| Variable | Purpose |
-| --- | --- |
-| `PLATFORM_ADMIN_USERNAME` | Username for the platform super admin |
-| `PLATFORM_ADMIN_EMAIL` | Email address for that account (it can also sign in with it) |
-| `PLATFORM_ADMIN_PASSWORD` | Initial password. It must pass Django's password validation |
-
-Then run:
+admin site, or create the platform super admin with the bundled command. Its
+username is `admin` and its email is `ndinayoeric1@gmail.com`; both are fixed in
+`backend/api/management/commands/ensure_platform_admin.py`. The password comes
+only from the `PLATFORM_ADMIN_PASSWORD` environment variable (in `backend/.env`
+or the process environment) and must pass Django's password validation:
 
 ```bash
 python backend/manage.py ensure_platform_admin
 ```
 
-The command creates a Django superuser with a platform admin profile. With none
-of the variables set it does nothing, and with only some of them set it fails
-without changing anything. It never resets the password or modifies an account
-that already exists, and it refuses to promote an existing account that is not
-already a platform admin. It does not run automatically during deployment.
-Remove `PLATFORM_ADMIN_PASSWORD` from the environment once the account exists,
-and never commit real values for these variables.
+The command creates a Django superuser with a platform admin profile when no
+account has that username or email. The password is needed only for that
+first creation. If a platform admin already has the username or the email, it
+is reused rather than duplicated: its username and email are set to the values
+above and its password is never changed. The command refuses, without changing
+anything, when the username and email belong to two different accounts or to an
+account that is not a platform admin. It does not run automatically during
+deployment. Remove `PLATFORM_ADMIN_PASSWORD` from the environment once the
+account exists, and never commit its real value.
 
 A third command, `bootstrap_admin`, creates a Django superuser from
 `DJANGO_SUPERUSER_USERNAME`, `DJANGO_SUPERUSER_PASSWORD` and
 `DJANGO_SUPERUSER_EMAIL` if they are set. It never changes an existing account
-and is what `start.sh` runs during deployment.
+and is what `start.sh` runs during deployment. That superuser has no platform
+admin profile, so it cannot use `/api/admin/...`. Do not give it the username
+`admin` or the email above, or `ensure_platform_admin` will refuse to continue.
+
+#### Seeding a new deployment
+
+`seed` initialises everything a fresh database needs and is safe to run any
+number of times. It never creates duplicates or changes a password:
+
+```bash
+python backend/manage.py migrate
+python backend/manage.py seed
+```
+
+It ensures the `Managers` group exists, then runs `ensure_platform_admin` as
+described above. Account roles (`employee`, `employer`,
+`admin`) are built into the code and need no seeding.
 
 ### 8. Install frontend dependencies
 
@@ -471,6 +484,10 @@ Set at minimum `SECRET_KEY`, `DATABASE_URL`, `FRONTEND_URL` and
 contributes its own hostname to `ALLOWED_HOSTS`. `FRONTEND_URL` must be the
 exact frontend origin with no path; it is added to CORS and trusted CSRF
 origins.
+
+To create the platform super admin, add `PLATFORM_ADMIN_PASSWORD`, deploy, and run
+`python manage.py seed` from the Render Shell (see "Seeding a new deployment"
+above). It is not part of `start.sh`, and running it again is harmless.
 
 **Frontend (Vercel).** `frontend/vercel.json` sets the build command, output
 directory, and the SPA rewrite that serves `index.html` for client-side routes
