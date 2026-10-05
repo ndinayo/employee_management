@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
 import dj_database_url
 import os
+import sys
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -316,10 +317,25 @@ EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() == "true"
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "false").lower() == "true"
 EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "20"))
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@employee-management.local")
-EMAIL_BACKEND = ("django.core.mail.backends.smtp.EmailBackend" if EMAIL_HOST
-                 else "django.core.mail.backends.console.EmailBackend")
+# Brevo sends over HTTPS, for hosts that block outbound SMTP. DEFAULT_FROM_EMAIL
+# must be a sender verified in the Brevo account. The test suite never sees a real
+# key from .env, so it cannot send live email; tests opt in with override_settings.
+RUNNING_TESTS = len(sys.argv) > 1 and sys.argv[1] == "test"
+BREVO_API_KEY = "" if RUNNING_TESTS else os.getenv("BREVO_API_KEY", "").strip()
+if BREVO_API_KEY:
+    EMAIL_BACKEND = "api.brevo.BrevoEmailBackend"
+elif EMAIL_HOST:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+else:
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
 # Without EMAIL_HOST the console backend "succeeds" without delivering anything,
 # so nothing may claim an invitation reached the employee.
-EMAIL_DELIVERS = bool(EMAIL_HOST)
-EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "20"))
+EMAIL_DELIVERS = bool(EMAIL_HOST or BREVO_API_KEY)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {"api": {"handlers": ["console"], "level": os.getenv("API_LOG_LEVEL", "INFO")}},
+}

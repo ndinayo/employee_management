@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { fetchAccount, loginUser, signupUser } from "./api";
+import PasswordInput from "./components/PasswordInput";
 
 const emptyFields = { username: "", email: "", password: "", password_confirm: "", role: "", business_name: "" };
 
@@ -75,12 +76,12 @@ export default function AuthForm({ onAuthenticated, initialMode = "signin" }) {
       <input id="username" name="username" value={fields.username} onChange={update} autoComplete="username" maxLength={254} required />
       {!signup && <p className="auth-hint">Added to a team by your employer? Sign in with the email and temporary password they sent you. There is no need to create an account.</p>}
       <label htmlFor="password">Password</label>
-      <input id="password" name="password" type="password" value={fields.password} onChange={update} autoComplete={signup ? "new-password" : "current-password"} maxLength={128} minLength={signup ? 8 : undefined} aria-describedby={signup ? "password-hint" : undefined} required />
+      <PasswordInput id="password" name="password" value={fields.password} onChange={update} autoComplete={signup ? "new-password" : "current-password"} maxLength={128} minLength={signup ? 8 : undefined} aria-describedby={signup ? "password-hint" : undefined} required />
       {!signup && <Link className="forgot-password-link" to="/forgot-password">Forgot password?</Link>}
       {signup && <>
         <p id="password-hint" className="auth-hint">Use at least 8 characters. Avoid common passwords, only numbers, or your personal details.</p>
         <label htmlFor="password-confirm">Confirm password</label>
-        <input id="password-confirm" name="password_confirm" type="password" value={fields.password_confirm} onChange={update} autoComplete="new-password" maxLength={128} required />
+        <PasswordInput id="password-confirm" name="password_confirm" value={fields.password_confirm} onChange={update} autoComplete="new-password" maxLength={128} required />
       </>}
       <button className="button button-coral" type="submit" disabled={busy}>
         {busy ? (signup ? "Creating account…" : "Signing in…") : (signup ? "Create account →" : "Sign in →")}

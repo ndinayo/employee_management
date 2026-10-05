@@ -8,9 +8,11 @@ import logging
 import secrets
 import string
 
+from email.utils import parseaddr
+
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.mail import get_connection, send_mail
+from django.core.mail import EmailMessage, get_connection, send_mail
 from django.db import transaction
 from django.db.models import Q
 
@@ -131,6 +133,11 @@ def shared_smtp():
             .order_by("id").first())
 
 
+def platform_mail():
+    """True when the server sends through Brevo instead of a saved Gmail sender."""
+    return bool(getattr(settings, "BREVO_API_KEY", ""))
+
+
 def business_smtp(business=None):
     # Kept as the public helper used by account/platform serializers. SMTP is
     # now platform-wide, so the requesting business does not affect the result.
@@ -147,6 +154,8 @@ def sender_owner_id():
 
 
 def can_manage_sender(business):
+    if platform_mail():
+        return False
     owner_id = sender_owner_id()
     return bool(business and (owner_id is None or owner_id == business.pk))
 
@@ -157,10 +166,36 @@ def can_deliver(business=None):
 
 
 def from_address(business=None):
+    if platform_mail():
+        return settings.DEFAULT_FROM_EMAIL
     sender = shared_smtp()
     if sender:
         return sender.email_host_user
     return settings.DEFAULT_FROM_EMAIL
+
+
+def personal_from_address(author, business=None):
+    """From address for mail a person wrote: their name on the platform's mailbox.
+
+    Only the platform mailbox is a verified sender (in Brevo, or the saved Gmail
+    account), so the author appears as the display name and replies reach them
+    through Reply-To instead.
+    """
+    system = from_address(business)
+    mailbox = parseaddr(system)[1]
+    name = " ".join(((author.get_full_name() or author.username) if author else "").split())
+    if not (name and mailbox):
+        return system
+    quoted = f"{name} via Employee Management".replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{quoted}" <{mailbox}>'
+
+
+def send_personal_mail(author, subject, body, recipients, business=None, connection=None):
+    """Send what a signed-in user wrote, so a reply goes straight back to them."""
+    reply_to = [author.email] if author and author.email else []
+    message = EmailMessage(subject, body, personal_from_address(author, business), recipients,
+                           reply_to=reply_to, connection=connection)
+    return message.send(fail_silently=False)
 
 
 def mail_connection(business=None, sender=None):
@@ -171,6 +206,8 @@ def mail_connection(business=None, sender=None):
     """
     backend = settings.EMAIL_BACKEND
     testing = backend.endswith("locmem.EmailBackend") or "inmemory" in backend
+    if platform_mail() and not testing:
+        return get_connection()
     sender = sender or shared_smtp()
     if sender and not testing:
         return get_connection(
@@ -464,8 +501,12 @@ def send_platform_message(message, recipients):
         "You are receiving this because you are on this conversation in Employee Management.\n"
     )
     try:
-        sent = send_mail(subject, body, from_address(message.business), recipients,
-                         fail_silently=False, connection=connection)
+        if message.from_admin:
+            sent = send_mail(subject, body, from_address(message.business), recipients,
+                             fail_silently=False, connection=connection)
+        else:
+            sent = send_personal_mail(message.sender, subject, body, recipients,
+                                      business=message.business, connection=connection)
         return bool(sent)
     except Exception:
         logger.exception("Platform message %s could not be emailed", message.pk)

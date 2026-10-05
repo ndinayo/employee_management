@@ -345,7 +345,8 @@ def email_settings_data(business, detail=""):
         "email_host": (sender.email_host if sender else "smtp.gmail.com") or "smtp.gmail.com",
         "email_port": sender.email_port if sender else 587,
         "email_use_tls": sender.email_use_tls if sender else True,
-        "email_host_user": sender.email_host_user if sender else "",
+        "email_host_user": onboarding.from_address() if onboarding.platform_mail()
+                           else (sender.email_host_user if sender else ""),
         "can_manage_email_settings": can_manage_settings,
         "shared_sender": True,
     }
@@ -410,6 +411,8 @@ class EmailSettingsView(APIView):
 
     def patch(self, request):
         business = self.business(request)
+        if onboarding.platform_mail():
+            raise PermissionDenied("Invitation email is managed by the platform and already works for your employees.")
         existing = onboarding.shared_smtp()
         if existing and not onboarding.can_manage_sender(business):
             raise PermissionDenied("Invitation email is managed by the platform and already works for your employees.")

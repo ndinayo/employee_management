@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { DigitalContractDocument, SignaturePad } from "./DigitalContract";
 import CompanyCalendar, { EmployeeAnnouncements } from "./CompanyCalendar";
 import ModalDialog from "./components/ModalDialog";
+import PasswordInput from "./components/PasswordInput";
 import { useConfirm } from "./components/ConfirmDialog";
 import { acknowledgeMyContractTermination, cancelMyLeave, changePassword, clockMyAttendance, fetchAccount, fetchMyAnnouncements, fetchMyAttendance, fetchMyCalendar, fetchMyContracts, fetchMyLeave, fetchMyPhoto, fetchMyProfile, markAllMyAnnouncementsRead, markAllMyCalendarRead, markMyAnnouncementRead, markMyCalendarEventRead, requestMyContractTermination, saveMyProfile, signMyContract, submitMyLeave, updateMyLeave } from "./api";
 import { label, longDate, today } from "./managerConfig";
@@ -59,15 +60,15 @@ function PasswordCard({ token, forced, onChanged }) {
     {done && !forced && <p className="message success" role="status">Your password has been changed.</p>}
     <fieldset className="auth-fields" disabled={busy}>
       <label htmlFor="current-password">{forced ? "Temporary password" : "Current password"}</label>
-      <input id="current-password" name="current_password" type="password" value={fields.current_password}
+      <PasswordInput id="current-password" name="current_password" value={fields.current_password}
              onChange={update} autoComplete="current-password" maxLength={128} required />
       <label htmlFor="new-password">New password</label>
-      <input id="new-password" name="new_password" type="password" value={fields.new_password}
+      <PasswordInput id="new-password" name="new_password" value={fields.new_password}
              onChange={update} autoComplete="new-password" maxLength={128} minLength={8}
              aria-describedby="new-password-hint" required />
       <p id="new-password-hint" className="auth-hint">Use at least 8 characters. Avoid common passwords, only numbers, or your personal details.</p>
       <label htmlFor="new-password-confirm">Confirm new password</label>
-      <input id="new-password-confirm" name="new_password_confirm" type="password" value={fields.new_password_confirm}
+      <PasswordInput id="new-password-confirm" name="new_password_confirm" value={fields.new_password_confirm}
              onChange={update} autoComplete="new-password" maxLength={128} required />
       <button className="button button-coral" type="submit" disabled={busy}>
         {busy ? "Saving…" : "Save password →"}

@@ -89,7 +89,7 @@ class EmployerSerializer(serializers.Serializer):
             "date_joined": as_when(user.date_joined),
             "last_login": as_when(user.last_login),
             "workspace_started": as_when(business.created_at),
-            "email_configured": onboarding.business_smtp(business),
+            "email_configured": onboarding.can_deliver(business),
             "employee_count": employees.count(),
             "active_employee_count": employees.filter(is_active=True).count(),
         }

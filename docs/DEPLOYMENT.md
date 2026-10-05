@@ -27,6 +27,23 @@ CORS_ALLOWED_ORIGINS=https://employee-management-one-sooty.vercel.app,https://em
 
 Use the origins without quotes, paths, trailing slashes or `#sign-in`. Add another exact origin if you use a different preview deployment URL. Save and deploy the environment changes. A healthy API responds to `/api/health/` with `{"status":"ok"}`.
 
+### Email on Render
+
+Render's free plan blocks outbound SMTP, so Gmail App Passwords cannot send from there. Send through Brevo's HTTPS API instead:
+
+1. Create a free account at [brevo.com](https://www.brevo.com). Under **Senders, domains & dedicated IPs**, make sure the address you want to send from is a verified sender.
+2. Under **SMTP & API → API keys**, create an API key.
+3. Set on the backend service, then redeploy:
+
+```dotenv
+BREVO_API_KEY=xkeysib-...
+DEFAULT_FROM_EMAIL=Employee Management <ndinayoeric151@gmail.com>
+```
+
+With `BREVO_API_KEY` set, every email the platform sends uses Brevo and the Gmail settings in the employer dashboard become read-only.
+
+Automated emails (invitations, password resets, contracts, leave) come from `DEFAULT_FROM_EMAIL` exactly as written. An email a signed-in user writes, such as an employer emailing the platform team, keeps the same mailbox but shows the writer's name, for example `Eric Ndinayo via Employee Management <ndinayoeric151@gmail.com>`, with `Reply-To` set to their account email so replies reach them directly. The same applies to the saved Gmail sender when Brevo is not configured.
+
 Public signup does not require an initial admin account. If bootstrap admin environment variables are configured, they still must be valid because `start.sh` runs `bootstrap_admin` before Gunicorn. Existing administrator passwords are not changed by signup.
 
 After migrating, `start.sh` runs `python manage.py check_duplicate_emails`. It is read-only: it lists any accounts that share a sign-in email in the deploy logs, and adds the case-insensitive unique email index once none remain. It never merges or deletes accounts.

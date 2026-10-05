@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { confirmPasswordReset, requestPasswordReset } from "./api";
+import PasswordInput from "./components/PasswordInput";
 
 export function ForgotPasswordPage() {
   const [identifier, setIdentifier] = useState("");
@@ -83,10 +84,10 @@ export function ResetPasswordPage() {
         <Link className="button button-coral" to="/signin">Continue to sign in →</Link>
       </> : !missingLink && <fieldset className="auth-fields" disabled={busy}>
         <label htmlFor="reset-new-password">New password</label>
-        <input id="reset-new-password" type="password" value={fields.new_password} onChange={(event) => setFields({ ...fields, new_password: event.target.value })} autoComplete="new-password" minLength={8} maxLength={128} required autoFocus />
+        <PasswordInput id="reset-new-password" value={fields.new_password} onChange={(event) => setFields({ ...fields, new_password: event.target.value })} autoComplete="new-password" minLength={8} maxLength={128} required autoFocus />
         <p className="auth-hint">Use at least 8 characters. Avoid common passwords, only numbers, or your personal details.</p>
         <label htmlFor="reset-confirm-password">Confirm new password</label>
-        <input id="reset-confirm-password" type="password" value={fields.new_password_confirm} onChange={(event) => setFields({ ...fields, new_password_confirm: event.target.value })} autoComplete="new-password" minLength={8} maxLength={128} required />
+        <PasswordInput id="reset-confirm-password" value={fields.new_password_confirm} onChange={(event) => setFields({ ...fields, new_password_confirm: event.target.value })} autoComplete="new-password" minLength={8} maxLength={128} required />
         <button className="button button-coral" type="submit" disabled={busy}>{busy ? "Saving…" : "Reset password →"}</button>
       </fieldset>}
       {!done && <Link className="auth-secondary-link" to="/forgot-password">Request a new reset link</Link>}
