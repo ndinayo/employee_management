@@ -11,4 +11,11 @@ def health(request):
             cursor.fetchone()
     except DatabaseError:
         return JsonResponse({"status": "unavailable"}, status=503)
-    return JsonResponse({"status": "ok"})
+    from api import onboarding
+
+    # Booleans and a provider name only: never the key or the sender address.
+    provider = onboarding.delivery_provider()
+    return JsonResponse({"status": "ok", "email": {
+        "provider": provider,
+        "brevo_configured": provider == "brevo",
+    }})

@@ -9,9 +9,20 @@ import sys
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
+# Render mounts "Secret Files" here rather than in the project directory. Real
+# environment variables always win over both files.
+load_dotenv("/etc/secrets/.env")
 
 def env_list(name, default=""):
     return [value.strip().rstrip("/") for value in os.getenv(name, default).split(",") if value.strip()]
+
+
+def env_value(name, default=""):
+    """A setting with surrounding whitespace and one pair of pasted quotes removed."""
+    value = os.getenv(name, default).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        value = value[1:-1].strip()
+    return value
 
 
 ON_RENDER = os.getenv("RENDER", "").lower() == "true"
@@ -316,12 +327,12 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() == "true"
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "false").lower() == "true"
 EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "20"))
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@employee-management.local")
+DEFAULT_FROM_EMAIL = env_value("DEFAULT_FROM_EMAIL") or EMAIL_HOST_USER or "no-reply@employee-management.local"
 # Brevo sends over HTTPS, for hosts that block outbound SMTP. DEFAULT_FROM_EMAIL
 # must be a sender verified in the Brevo account. The test suite never sees a real
 # key from .env, so it cannot send live email; tests opt in with override_settings.
 RUNNING_TESTS = len(sys.argv) > 1 and sys.argv[1] == "test"
-BREVO_API_KEY = "" if RUNNING_TESTS else os.getenv("BREVO_API_KEY", "").strip()
+BREVO_API_KEY = "" if RUNNING_TESTS else env_value("BREVO_API_KEY")
 if BREVO_API_KEY:
     EMAIL_BACKEND = "api.brevo.BrevoEmailBackend"
 elif EMAIL_HOST:

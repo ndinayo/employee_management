@@ -285,6 +285,9 @@ def database_health():
 
 
 def email_health():
+    if onboarding.platform_mail():
+        return {"status": "operational", "detail": f"Sending through Brevo as {settings.DEFAULT_FROM_EMAIL}.",
+                "sender": settings.DEFAULT_FROM_EMAIL, "host": "api.brevo.com"}
     sender = onboarding.shared_smtp()
     if sender:
         return {"status": "operational", "detail": f"Sending as {sender.email_host_user}.",

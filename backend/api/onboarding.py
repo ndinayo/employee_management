@@ -161,8 +161,18 @@ def can_manage_sender(business):
 
 
 def can_deliver(business=None):
-    """True only when a real inbox can be reached, or tests pin EMAIL_DELIVERS."""
-    return business_smtp() or bool(getattr(settings, "EMAIL_DELIVERS", False))
+    """True only when a real inbox can be reached, or tests pin EMAIL_DELIVERS.
+
+    Brevo is platform-wide: with its key set, no employer needs a Gmail sender.
+    """
+    return platform_mail() or business_smtp() or bool(getattr(settings, "EMAIL_DELIVERS", False))
+
+
+def delivery_provider():
+    """Which channel mail leaves through: "brevo", "smtp" or "none". Never the key."""
+    if platform_mail():
+        return "brevo"
+    return "smtp" if can_deliver() else "none"
 
 
 def from_address(business=None):

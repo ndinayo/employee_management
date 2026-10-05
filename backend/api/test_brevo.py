@@ -168,6 +168,94 @@ class PersonalSenderTests(APITestCase):
             self.assertEqual(sent.reply_to, [])
 
 
+@override_settings(BREVO_API_KEY="xkeysib-regression-secret", DEFAULT_FROM_EMAIL=SYSTEM_SENDER,
+                   EMAIL_BACKEND="api.brevo.BrevoEmailBackend", EMAIL_DELIVERS=False)
+class BrevoWithoutGmailRegressionTests(APITestCase):
+    """Production: BREVO_API_KEY is set and no employer ever saved a Gmail App Password.
+
+    EMAIL_DELIVERS is pinned False so the key alone must count as configured.
+    """
+
+    password = "Cedar!Lantern-47-River"
+
+    def setUp(self):
+        cache.clear()
+        self.business = Business.objects.create(name="Vatcho")
+        self.employer = User.objects.create_user("ndinayo", "ndinayo@example.com", self.password)
+        AccountProfile.objects.create(user=self.employer, role="employer", business=self.business)
+        self.client.force_authenticate(self.employer)
+        self.assertFalse(InvitationEmailSettings.objects.exists())
+
+    def hire(self):
+        return self.client.post("/api/employees/", {
+            "first_name": "Kamana", "last_name": "Muhire", "job_title": "Sales Manager",
+            "email": "kamana@example.com"}, format="json")
+
+    def test_invitation_is_sent_through_brevo_and_never_called_unconfigured(self):
+        with mock.patch("api.brevo.urllib.request.urlopen", return_value=FakeResponse()) as urlopen:
+            result = self.hire()
+        self.assertEqual(result.status_code, 201, result.data)
+        invite = result.data["invite"]
+        self.assertTrue(invite["email_sent"], invite)
+        self.assertEqual(invite["detail"], "Sign-in details were emailed to kamana@example.com.")
+        self.assertNotIn("not set up", invite["detail"])
+        self.assertNotIn("Gmail", invite["detail"])
+        self.assertNotIn("temporary_password", invite)
+
+        urlopen.assert_called_once()
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.brevo.com/v3/smtp/email")
+        payload = json.loads(request.data)
+        self.assertEqual(payload["to"], [{"email": "kamana@example.com"}])
+        self.assertEqual(payload["sender"], {"email": "hr@example.com", "name": "Employee Management"})
+        self.assertNotIn("replyTo", payload)
+
+    def test_employer_is_not_asked_for_gmail(self):
+        account = self.client.get("/api/account/").data
+        self.assertTrue(account["email_configured"])
+        settings = self.client.get("/api/account/email/").data
+        self.assertTrue(settings["email_configured"])
+        self.assertFalse(settings["can_manage_email_settings"])
+
+    def test_a_brevo_rejection_is_reported_as_a_failed_send_not_as_unconfigured(self):
+        with mock.patch("api.brevo.urllib.request.urlopen", side_effect=OSError("401")):
+            invite = self.hire().data["invite"]
+        self.assertFalse(invite["email_sent"])
+        self.assertIn("could not be sent", invite["detail"])
+        self.assertNotIn("Gmail", invite["detail"])
+
+    def test_health_reports_brevo_without_leaking_the_key(self):
+        response = self.client.get("/api/health/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["email"], {"provider": "brevo", "brevo_configured": True})
+        self.assertNotIn(b"xkeysib", response.content)
+        self.assertNotIn(b"hr@example.com", response.content)
+
+
+class HealthWithoutBrevoTests(APITestCase):
+    @override_settings(BREVO_API_KEY="", EMAIL_DELIVERS=False)
+    def test_health_reports_no_email_provider(self):
+        self.assertEqual(self.client.get("/api/health/").json()["email"],
+                         {"provider": "none", "brevo_configured": False})
+
+
+class EnvValueTests(SimpleTestCase):
+    def test_pasted_quotes_and_whitespace_are_removed(self):
+        from backend.settings import env_value
+
+        cases = {
+            '  xkeysib-abc  ': "xkeysib-abc",
+            '"xkeysib-abc"': "xkeysib-abc",
+            "'xkeysib-abc'": "xkeysib-abc",
+            '"Employee Management <hr@example.com>"': "Employee Management <hr@example.com>",
+            '"Employee Management" <hr@example.com>': '"Employee Management" <hr@example.com>',
+            "": "",
+        }
+        for raw, expected in cases.items():
+            with mock.patch.dict("os.environ", {"EM_TEST_VALUE": raw}):
+                self.assertEqual(env_value("EM_TEST_VALUE"), expected, raw)
+
+
 @override_settings(DEFAULT_FROM_EMAIL=SYSTEM_SENDER, BREVO_API_KEY="xkeysib-test")
 class PersonalFromAddressTests(SimpleTestCase):
     def test_quotes_and_line_breaks_in_names_cannot_break_the_header(self):

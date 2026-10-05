@@ -65,7 +65,6 @@ class AccountSerializer(serializers.Serializer):
     email_configured = serializers.BooleanField(
         help_text="Employers only: whether invitation email can actually be delivered.")
 
-
 class TokenPairSerializer(serializers.Serializer):
     """A freshly issued JWT pair."""
 
@@ -319,6 +318,9 @@ HEALTH_PATH = {
             "description": (
                 "Readiness probe. Runs `SELECT 1` against the database and is exempt from the "
                 "HTTPS redirect so a load balancer can reach it over plain HTTP.\n\n"
+                "`email.provider` reports how outgoing mail is sent (`brevo`, `smtp` or `none`) "
+                "and `email.brevo_configured` whether the server loaded a Brevo API key. "
+                "Neither ever includes the key or the sender address.\n\n"
                 "This is a plain Django view rather than a DRF one, so it is described by hand "
                 "here instead of being introspected."
             ),
@@ -330,9 +332,15 @@ HEALTH_PATH = {
                         "application/json": {
                             "schema": {
                                 "type": "object",
-                                "properties": {"status": {"type": "string", "enum": ["ok"]}},
+                                "properties": {
+                                    "status": {"type": "string", "enum": ["ok"]},
+                                    "email": {"type": "object", "properties": {
+                                        "provider": {"type": "string", "enum": ["brevo", "smtp", "none"]},
+                                        "brevo_configured": {"type": "boolean"},
+                                    }},
+                                },
                             },
-                            "example": {"status": "ok"},
+                            "example": {"status": "ok", "email": {"provider": "brevo", "brevo_configured": True}},
                         }
                     },
                 },
