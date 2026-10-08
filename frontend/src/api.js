@@ -235,8 +235,20 @@ export function fetchMyAttendance(token) {
   return request("/api/me/attendance/", { token });
 }
 
-export function clockMyAttendance(token, action, shift = "day", time) {
-  return request("/api/me/attendance/", { method: "POST", token, body: { action, shift, time } });
+export function clockMyAttendance(token, action, shift = "day", time, position = null) {
+  return request("/api/me/attendance/", { method: "POST", token, body: { action, shift, time, ...(position || {}) } });
+}
+
+export function fetchWorkplaceLocation(token) {
+  return request("/api/workplace-location/", { token });
+}
+
+export function saveWorkplaceLocation(token, body) {
+  return request("/api/workplace-location/", { method: "PUT", token, body });
+}
+
+export function updateWorkplaceRadius(token, radius_m) {
+  return request("/api/workplace-location/", { method: "PATCH", token, body: { radius_m } });
 }
 
 export function fetchMyLeave(token) {
@@ -313,6 +325,22 @@ export function decideContractTermination(token, id, body) {
 
 export function fetchAdminOverview(token) {
   return request("/api/admin/overview/", { token });
+}
+
+export function fetchAdminActivity(token) {
+  return request("/api/admin/activity/", { token });
+}
+
+export function fetchAdminCompanyActivity(token, id) {
+  return request(`/api/admin/businesses/${id}/activity/`, { token });
+}
+
+export function fetchAdminEmployeeActivity(token, id) {
+  return request(`/api/admin/employees/${id}/activity/`, { token });
+}
+
+export function fetchAdminRecords(token, resource, scope) {
+  return request(`/api/admin/records/${resource}/?${new URLSearchParams(scope)}`, { token });
 }
 
 export function fetchAdminBusinesses(token) {

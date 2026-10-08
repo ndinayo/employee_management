@@ -6,6 +6,7 @@ from .views import (EmployeeViewSet, ContractViewSet, AttendanceViewSet, LeaveBa
                     SalaryViewSet, PayrollViewSet, ManagerReportsView)
 from .payroll_views import (AssetIncidentViewSet, PayrollCalculationViewSet, PayrollPolicyView,
                             SalaryAdvanceRequestViewSet, SalaryAdvanceViewSet)
+from .workplace import WorkplaceLocationView
 
 router = DefaultRouter()
 router.register("employees", EmployeeViewSet)
@@ -24,5 +25,6 @@ router.register("salary-advance-requests", SalaryAdvanceRequestViewSet, basename
 router.register("asset-incidents", AssetIncidentViewSet)
 
 urlpatterns = [path("reports/", ManagerReportsView.as_view(), name="manager-reports"),
+               path("workplace-location/", WorkplaceLocationView.as_view(), name="workplace-location"),
                path("payroll-policy/", PayrollPolicyView.as_view(), name="payroll-policy"),
                path("", include(router.urls))]

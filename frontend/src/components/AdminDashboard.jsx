@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import {
-  deleteAdminBusiness, deleteAdminEmployee, fetchAdminBusinesses, fetchAdminEmployees,
-  fetchAdminEmployers, fetchAdminOverview, fetchAdminThread, fetchAdminThreads,
+  deleteAdminBusiness, deleteAdminEmployee, fetchAdminBusinesses, fetchAdminCompanyActivity, fetchAdminEmployeeActivity, fetchAdminEmployees,
+  fetchAdminEmployers, fetchAdminOverview, fetchAdminRecords, fetchAdminThread, fetchAdminThreads,
   markAdminThreadRead, markAllAdminThreadsRead, saveAdminEmployee, saveAdminEmployer,
   saveCompanyStatus, sendAdminMessage,
 } from "../api";
@@ -11,6 +11,7 @@ import DashboardTopNav from "./DashboardTopNav";
 import PlatformOverview from "./PlatformOverview";
 import ModalDialog from "./ModalDialog";
 import { useConfirm } from "./ConfirmDialog";
+import { label, modules, money } from "../managerConfig";
 
 function whenCreated(value) {
   if (!value) return "Never";
@@ -37,6 +38,7 @@ const companyFilters = [["", "All companies"], ["active", "Active"],
 
 const companyStatusLabels = { active: "Active", pending: "Awaiting verification", suspended: "Suspended" };
 const companyStatusClass = { active: "active", pending: "pending", suspended: "ended" };
+const employmentTypes = { full_time: "Full time", part_time: "Part time", contract: "Contract", intern: "Intern" };
 
 function matchesFilter(row, status) {
   if (status === "active") return row.is_active;
@@ -68,16 +70,21 @@ function BackButton() {
   // first in the tab, so stepping back would leave the dashboard altogether;
   // fall back to the overview instead.
   const hasHistory = (window.history.state?.idx ?? 0) > 0;
-  return <button className="page-back" type="button" onClick={() => hasHistory ? navigate(-1) : navigate("/admin")}>
+  return <button className="page-back" type="button" onClick={() => hasHistory ? navigate(-1) : navigate("/dashboard")}>
     <span aria-hidden="true">&larr;</span> Back
   </button>;
 }
 
-function Table({ columns, rows, empty, actions, rowClassName }) {
+function Table({ columns, rows, empty, actions, rowClassName, onRowClick }) {
   if (!rows.length) return <p className="empty-state">{empty}</p>;
+  const open = (event, row) => {
+    if (onRowClick && !event.target.closest("button, a")) onRowClick(row);
+  };
   return <div className="table-scroll"><table>
     <thead><tr>{columns.map((column) => <th key={column.title} scope="col">{column.title}</th>)}{actions && <th scope="col">Actions</th>}</tr></thead>
-    <tbody>{rows.map((row) => <tr key={row.id} className={rowClassName?.(row) || undefined}>
+    <tbody>{rows.map((row) => <tr key={row.id} className={[onRowClick ? "clickable-row" : "", rowClassName?.(row) || ""].filter(Boolean).join(" ") || undefined}
+      tabIndex={onRowClick ? 0 : undefined} onClick={(event) => open(event, row)}
+      onKeyDown={(event) => { if (event.key === "Enter") open(event, row); }}>
       {columns.map((column) => <td key={column.title}>{column.value(row) || "Not recorded"}</td>)}
       {actions && <td><div className="row-actions">{actions(row)}</div></td>}
     </tr>)}</tbody>
@@ -144,7 +151,7 @@ function MessagesPage({ token, onAuthError }) {
         ? <p className="empty-state">No companies on the platform yet.</p>
         : <div className="thread-layout">
           <nav className="thread-list" aria-label="Companies">
-            {threads.map((row) => <Link key={row.business} to={`/admin/messages/${row.business}`}
+            {threads.map((row) => <Link key={row.business} to={`/dashboard/messages/${row.business}`}
               className={`thread-link${String(row.business) === String(business) ? " selected" : ""}`}>
               <strong>{row.business_name}{row.unread > 0 && <span className="attention-badge" aria-label={`${row.unread} unread`}>{row.unread}</span>}</strong>
               <small>{row.last_body ? `${row.last_from_admin ? "You: " : ""}${row.last_body}` : "No messages yet"}</small>
@@ -167,8 +174,187 @@ function MessagesPage({ token, onAuthError }) {
   </>;
 }
 
+const activityFacts = [
+  ["checked_in_today", "Checked in today"], ["on_shift_now", "On shift now"],
+  ["shifts_completed_today", "Shifts completed today"], ["on_leave_today", "On leave today"],
+  ["leave_requests_pending", "Leave requests pending"], ["contracts_active", "Signed contracts"],
+  ["contracts_awaiting_signature", "Contracts awaiting signature"], ["payslips_this_month", "Salaries paid this month"],
+  ["announcements_this_month", "Announcements this month"], ["upcoming_events", "Calendar events, next 30 days"],
+];
+
+function useDetails(load, token, id, onAuthError) {
+  const [details, setDetails] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    load(token, id).then((result) => { if (!cancelled) setDetails(result); })
+      .catch((err) => { if (!cancelled) { setError(err.message); onAuthError(err); } });
+    return () => { cancelled = true; };
+  }, [load, token, id, onAuthError]);
+  return [details, error];
+}
+
+function Facts({ rows }) {
+  return <dl className="employee-manage-facts">
+    {rows.map(([title, value]) => <div key={title} className={String(value ?? "").length > 120 ? "fact-wide" : undefined}>
+      <dt>{title}</dt><dd>{value ?? "Not recorded"}</dd>
+    </div>)}
+  </dl>;
+}
+
+const recordPerson = { title: "Employee", value: (row) => row.employee_name };
+const recordKinds = {
+  employees: { title: "Employees", columns: [{ title: "Name", value: (row) => `${row.first_name} ${row.last_name}` }, { title: "Work email", value: (row) => row.email }, { title: "Phone", value: (row) => row.phone }, { title: "Job title", value: (row) => row.job_title }, { title: "Department", value: (row) => row.department }, { title: "Status", value: (row) => row.is_active ? "Active" : "Inactive" }] },
+  contracts: { title: "Contracts", columns: modules.contracts.columns },
+  attendance: { title: "Attendance", columns: modules.attendance.columns },
+  leave: { title: "Leave requests", columns: [...modules.leave.columns, { title: "Reason", value: (row) => row.reason }] },
+  "leave-balances": { title: "Leave balances", columns: [recordPerson, { title: "Type", value: (row) => label(row.leave_type) }, { title: "Year", value: (row) => String(row.year) }, { title: "Allocated", value: (row) => row.unlimited ? "Unlimited" : String(row.days_allocated) }, { title: "Used", value: (row) => String(row.used_days) }, { title: "Remaining", value: (row) => row.unlimited ? "Unlimited" : String(row.remaining_days) }] },
+  salaries: { title: "Salaries", columns: modules.salaries.columns },
+  payroll: { title: "Payroll", columns: modules.payroll.columns },
+  "salary-advances": { title: "Salary advances", columns: [recordPerson, { title: "Amount", value: (row) => money(row.amount, row.currency) }, { title: "Issued", value: (row) => row.issue_date }, { title: "Outstanding", value: (row) => money(row.outstanding_balance, row.currency) }, { title: "Status", value: (row) => label(row.status) }, { title: "Reason", value: (row) => row.reason }] },
+  "salary-advance-requests": { title: "Advance requests", columns: [recordPerson, { title: "Amount", value: (row) => money(row.amount, row.currency) }, { title: "Reason", value: (row) => row.reason }, { title: "Requested", value: (row) => whenCreated(row.requested_at) }, { title: "Status", value: (row) => label(row.status) }] },
+  "asset-incidents": { title: "Asset incidents", columns: [recordPerson, { title: "Asset", value: (row) => [row.asset_name, row.asset_tag].filter(Boolean).join(" · ") }, { title: "Type", value: (row) => label(row.incident_type) }, { title: "Date", value: (row) => row.incident_date }, { title: "Estimated loss", value: (row) => money(row.estimated_loss, row.currency) }, { title: "Status", value: (row) => label(row.status) }] },
+  announcements: { title: "Announcements", columns: modules.announcements.columns },
+  "calendar-events": { title: "Calendar", columns: [{ title: "Event", value: (row) => row.title }, { title: "Category", value: (row) => label(row.category) }, { title: "Date", value: (row) => row.end_date && row.end_date !== row.date ? `${row.date} → ${row.end_date}` : row.date }, { title: "Location", value: (row) => row.location }, { title: "Who", value: (row) => row.all_employees ? "Everyone" : `${row.employee_ids.length} invited` }] },
+  holidays: { title: "Holidays", columns: modules.holidays.columns },
+  "workplace-locations": { title: "Workplace location", columns: [{ title: "Coordinates", value: (row) => `${row.latitude}, ${row.longitude}` }, { title: "Radius", value: (row) => `${row.radius_m} m` }, { title: "Updated", value: (row) => whenCreated(row.updated_at) }, { title: "Updated by", value: (row) => row.updated_by }] },
+};
+const employeeRecordKinds = ["contracts", "attendance", "leave", "leave-balances", "salaries", "payroll", "salary-advances", "salary-advance-requests", "asset-incidents", "calendar-events"];
+const companyRecordKinds = ["employees", ...employeeRecordKinds, "announcements", "holidays", "workplace-locations"];
+const hiddenRecordKeys = new Set(["id", "employee", "business", "employee_ids", "photo", "contract_document", "latest_contract",
+  "invite", "document", "evidence", "signature_data", "revision_of", "payroll", "advance", "salary_advance", "asset_incident"]);
+
+function recordValue(value) {
+  if (value === null || value === undefined || value === "") return "Not recorded";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.length ? value.map((item) => item && typeof item === "object" ? Object.values(item).filter((part) => part !== null && part !== "").join(" · ") : item).join("; ") : "None";
+  if (typeof value === "object") return Object.entries(value).map(([key, part]) => `${label(key)}: ${part}`).join(" · ");
+  const text = String(value);
+  return /<[a-z][^>]*>/i.test(text) ? new DOMParser().parseFromString(text, "text/html").body.textContent : text;
+}
+
+// Read-only: every record the employer keeps, exactly as they see it. Changes stay with the employer.
+function AdminRecords({ token, scope, kinds, onAuthError }) {
+  const [kind, setKind] = useState(kinds[0]);
+  const [loaded, setLoaded] = useState(null);
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchAdminRecords(token, kind, scope).then((rows) => { if (!cancelled) { setLoaded({ kind, rows }); setError(""); } })
+      .catch((err) => { if (!cancelled) { setError(err.message); onAuthError(err); } });
+    return () => { cancelled = true; };
+  }, [token, kind, scope, onAuthError]);
+  const { title, columns } = recordKinds[kind];
+  const forEmployee = scope.startsWith("employee=");
+  return <>
+    <div className="admin-records-heading"><h4>Records</h4>
+      <div className="records-filters"><select aria-label="Record type" value={kind} onChange={(event) => { setKind(event.target.value); setOpen(null); }}>
+        {kinds.map((value) => <option key={value} value={value}>{recordKinds[value].title}</option>)}
+      </select></div>
+    </div>
+    {error && <p className="message error" role="alert">{error}</p>}
+    {open ? <>
+      <button className="page-back" type="button" onClick={() => setOpen(null)}><span aria-hidden="true">&larr;</span> Back to {title.toLowerCase()}</button>
+      <Facts rows={Object.entries(open).filter(([key]) => !hiddenRecordKeys.has(key)).map(([key, value]) => [label(key), recordValue(value)])} />
+    </> : loaded?.kind !== kind ? !error && <p className="empty-state" role="status">Loading…</p>
+      : <Table columns={forEmployee ? columns.filter((column) => column.title !== "Employee") : columns} rows={loaded.rows}
+        empty={`No ${title.toLowerCase()} recorded.`} onRowClick={setOpen} />}
+  </>;
+}
+
+const loadProfile = (token, id) => fetchAdminRecords(token, "employees", `employee=${id}`).then((rows) => rows[0] || {});
+
+function CompanyDetails({ token, companyId, title, extraFacts = [], onClose, onAuthError }) {
+  const [details, error] = useDetails(fetchAdminCompanyActivity, token, companyId, onAuthError);
+  const company = details?.company;
+  return <ModalDialog title={title} wide onClose={onClose}><section className="record-form company-details">
+    <h3>{title}</h3>
+    {error && <p className="message error" role="alert">{error}</p>}
+    {!details && !error && <p className="empty-state" role="status">Loading…</p>}
+    {details && <>
+      <Facts rows={[
+        ["Status", companyStatusLabels[company.status] || company.status],
+        ["Employer", company.employer_username || "No employer account"],
+        ["Employer email", company.employer_email || "Not recorded"],
+        ...extraFacts,
+        ["Opened", whenCreated(company.created_at)],
+        ["Last sign-in", whenCreated(company.last_login_at)],
+        ["Employees", `${company.active_employee_count} active of ${company.employee_count}`],
+        ["Workplace location", details.workplace_location_set ? "Set" : "Not set"],
+      ]} />
+      <h4>Activity</h4>
+      <Facts rows={activityFacts.map(([key, label]) => [label, details.counts[key]])} />
+      <h4>Departments</h4>
+      {!details.departments.length ? <p className="empty-state">No departments recorded.</p>
+        : <Facts rows={details.departments.map((row) => [row.name, `${row.employees} ${row.employees === 1 ? "employee" : "employees"}`])} />}
+      <AdminRecords token={token} scope={`business=${companyId}`} kinds={companyRecordKinds} onAuthError={onAuthError} />
+    </>}
+  </section></ModalDialog>;
+}
+
+const todayLabels = { on_shift: "On shift now", checked_out: "Checked in and out", on_leave: "On approved leave", not_checked_in: "Not checked in" };
+const accountLabels = { active: "Active", pending_first_sign_in: "Invited, not signed in yet", none: "No account" };
+
+function EmployeeDetails({ token, employee, onClose, onAuthError }) {
+  const [details, error] = useDetails(fetchAdminEmployeeActivity, token, employee.id, onAuthError);
+  const [profile] = useDetails(loadProfile, token, employee.id, onAuthError);
+  const name = `${employee.first_name} ${employee.last_name}`;
+  const person = details?.employee;
+  const leave = details?.leave_requests_this_year;
+  const contract = details?.contract;
+  return <ModalDialog title={name} wide onClose={onClose}><section className="record-form company-details">
+    <h3>{name}</h3>
+    {error && <p className="message error" role="alert">{error}</p>}
+    {!details && !error && <p className="empty-state" role="status">Loading…</p>}
+    {details && <>
+      <Facts rows={[
+        ["Business", person.business_name || "Not recorded"],
+        ["Work email", person.email],
+        ["Job title", person.job_title],
+        ["Department", person.department || "Not recorded"],
+        ["Employment type", employmentTypes[person.employment_type] || person.employment_type],
+        ["Joined", whenCreated(person.date_joined)],
+        ["Reports to", person.manager_name || "Not recorded"],
+        ["Status", person.is_active ? "Active" : "Inactive"],
+        ["Account", accountLabels[person.account_status] || person.account_status],
+        ["Username", person.username || "Not recorded"],
+        ["Last sign-in", whenCreated(person.last_login_at)],
+      ]} />
+      {profile && <>
+        <h4>Personal details</h4>
+        <Facts rows={[
+          ["Phone", profile.phone || "Not recorded"],
+          ["Home address", profile.address || "Not recorded"],
+          ["Emergency contact", profile.emergency_contact || "Not recorded"],
+          ["Job description", profile.job_description || "Not recorded"],
+        ]} />
+      </>}
+      <h4>Activity</h4>
+      <Facts rows={[
+        ["Today", todayLabels[details.today] || details.today],
+        ["Days worked this month", details.days_worked_this_month],
+        ["Hours worked this month", details.hours_worked_this_month],
+        ["Leave requests this year", `${leave.approved} approved · ${leave.pending} pending · ${leave.rejected} rejected`],
+        ["Salaries paid this year", details.payslips_this_year],
+      ]} />
+      <h4>Contract</h4>
+      {!contract ? <p className="empty-state">No contract recorded.</p> : <Facts rows={[
+        ["Contract", contract.title],
+        ["Signature", contract.signature],
+        ["Employment status", contract.status],
+        ["Approved to start work", contract.worker_approved ? "Yes" : "Not yet"],
+        ["Start date", whenCreated(contract.start_date)],
+        ["End date", contract.end_date ? whenCreated(contract.end_date) : "Open-ended"],
+      ]} />}
+      <AdminRecords token={token} scope={`employee=${employee.id}`} kinds={employeeRecordKinds} onAuthError={onAuthError} />
+    </>}
+  </section></ModalDialog>;
+}
+
 function CompaniesPage({ token, onAuthError }) {
   const [rows, setRows] = useState(null);
+  const [viewing, setViewing] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -222,7 +408,7 @@ function CompaniesPage({ token, onAuthError }) {
   }
 
   return <>
-    <div className="section-heading"><div><p className="eyebrow dark-eyebrow">PLATFORM</p><h2>Companies</h2><p>Every company using the platform, and where each one stands. Suspending closes a company\u2019s workspace without deleting anything; deleting removes it, its employer sign-in and its employees for good. Add a company from <Link to="/admin/employers">Employers</Link>, which opens the company and its sign-in together.</p></div></div>
+    <div className="section-heading"><div><p className="eyebrow dark-eyebrow">PLATFORM</p><h2>Companies</h2><p>Every company using the platform, and where each one stands. Suspending closes a company\u2019s workspace without deleting anything; deleting removes it, its employer sign-in and its employees for good. Add a company from <Link to="/dashboard/employers">Employers</Link>, which opens the company and its sign-in together.</p></div></div>
     {error && <p className="message error" role="alert">{error}</p>}
     {notice && <p className="message success" role="status">{notice}</p>}
     {pending > 0 && status !== "pending" && <button className="attention-banner attention-banner-button" type="button" onClick={() => filterBy("pending")}><span className="attention-badge">{pending}</span><span><strong>{pending === 1 ? "A company is awaiting verification" : "Companies are awaiting verification"}</strong><p>They signed themselves up and have not been checked yet. Select to see only those.</p></span><span aria-hidden="true">&rarr;</span></button>}
@@ -244,6 +430,7 @@ function CompaniesPage({ token, onAuthError }) {
           { title: "Last sign-in", value: (row) => whenCreated(row.last_login_at) },
         ]}
         rows={visible}
+        onRowClick={setViewing}
         rowClassName={(row) => String(row.id) === highlighted ? "attention-row" : ""}
         empty={status ? "No companies match this filter." : "No companies on the platform yet."}
         actions={(row) => <>
@@ -253,12 +440,14 @@ function CompaniesPage({ token, onAuthError }) {
         </>}
       />}
     </section>
+    {viewing && <CompanyDetails token={token} companyId={viewing.id} title={viewing.name} onClose={() => setViewing(null)} onAuthError={onAuthError} />}
     {confirmation}
   </>;
 }
 
 function EmployersPage({ token, onAuthError }) {
   const [rows, setRows] = useState(null);
+  const [viewing, setViewing] = useState(null);
   const [form, setForm] = useState(null);
   const [editing, setEditing] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -313,7 +502,7 @@ function EmployersPage({ token, onAuthError }) {
   }
 
   return <>
-    <div className="section-heading"><div><p className="eyebrow dark-eyebrow">PLATFORM</p><h2>Employers</h2><p>Create, update, or suspend the sign-in a company uses. Deactivating blocks that sign-in and keeps the company and its employees on file. To remove an employer account, delete the whole company from <Link to="/admin/companies">Companies</Link> instead.</p></div><button className="button button-coral" type="button" disabled={busy} onClick={() => open()}>+ Add employer</button></div>
+    <div className="section-heading"><div><p className="eyebrow dark-eyebrow">PLATFORM</p><h2>Employers</h2><p>Create, update, or suspend the sign-in a company uses. Deactivating blocks that sign-in and keeps the company and its employees on file. To remove an employer account, delete the whole company from <Link to="/dashboard/companies">Companies</Link> instead.</p></div><button className="button button-coral" type="button" disabled={busy} onClick={() => open()}>+ Add employer</button></div>
     {error && <p className="message error" role="alert">{error}</p>}
     {notice && <p className="message success" role="status">{notice}</p>}
     {dormant > 0 && status !== "dormant" && <button className="attention-banner attention-banner-button" type="button" onClick={() => filterBy("dormant")}><span className="attention-badge">{dormant}</span><span><strong>{dormant === 1 ? "A company has never signed in" : "Companies have never signed in"}</strong><p>Their employer account was created but has not been used yet, so the workspace is still empty. Select to see only those.</p></span><span aria-hidden="true">&rarr;</span></button>}
@@ -353,6 +542,7 @@ function EmployersPage({ token, onAuthError }) {
           { title: "Status", value: (row) => <span className={`status-badge status-${row.is_active ? "active" : "ended"}`}>{row.is_active ? "Active" : "Deactivated"}</span> },
         ]}
         rows={visible}
+        onRowClick={setViewing}
         rowClassName={(row) => employerNeedsAttention(row) ? "attention-row" : ""}
         empty={status ? "No employers match this filter." : "No employer workspaces yet."}
         actions={(row) => <>
@@ -363,12 +553,16 @@ function EmployersPage({ token, onAuthError }) {
         </>}
       />}
     </section>
+    {viewing && <CompanyDetails token={token} companyId={viewing.business_id} title={viewing.business_name}
+      extraFacts={[["Employer account created", whenCreated(viewing.date_joined)], ["Invitation email", viewing.email_configured ? "Set up" : "Not set up"]]}
+      onClose={() => setViewing(null)} onAuthError={onAuthError} />}
     {confirmation}
   </>;
 }
 
 function EmployeesPage({ token, onAuthError }) {
   const [rows, setRows] = useState(null);
+  const [viewing, setViewing] = useState(null);
   const [businesses, setBusinesses] = useState([]);
   const [form, setForm] = useState(null);
   const [editing, setEditing] = useState(null);
@@ -460,14 +654,19 @@ function EmployeesPage({ token, onAuthError }) {
           { title: "Email", value: (row) => row.email },
           { title: "Business", value: (row) => row.business_name },
           { title: "Job title", value: (row) => row.job_title },
+          { title: "Department", value: (row) => row.department },
+          { title: "Type", value: (row) => employmentTypes[row.employment_type] || row.employment_type },
+          { title: "Joined", value: (row) => whenCreated(row.date_joined) },
           { title: "Account", value: (row) => row.account_status === "active" ? "Active" : row.account_status === "pending_first_sign_in" ? "Invited" : "No account" },
           { title: "Status", value: (row) => row.is_active ? "Active" : "Inactive" },
         ]}
         rows={visible}
+        onRowClick={setViewing}
         empty={status ? "No employees match this filter." : "No employees on the platform yet."}
         actions={(row) => <><button type="button" disabled={busy} onClick={() => open(row)}>Edit</button><button type="button" disabled={busy} className="danger-link" onClick={() => remove(row)}>Delete</button></>}
       />}
     </section>
+    {viewing && <EmployeeDetails token={token} employee={viewing} onClose={() => setViewing(null)} onAuthError={onAuthError} />}
     {confirmation}
   </>;
 }
@@ -475,7 +674,7 @@ function EmployeesPage({ token, onAuthError }) {
 export default function AdminDashboard({ token, account, onLogout, onAuthError }) {
   const [attention, setAttention] = useState(null);
   const { pathname } = useLocation();
-  const atOverview = pathname.replace(/\/$/, "") === "/admin";
+  const atOverview = pathname.replace(/\/$/, "") === "/dashboard";
   useEffect(() => {
     let cancelled = false;
     const refresh = () => fetchAdminOverview(token).then((data) => {
@@ -492,15 +691,20 @@ export default function AdminDashboard({ token, account, onLogout, onAuthError }
   return <>
     <DashboardTopNav
       items={[
-        { label: "Overview", to: "/admin", end: true },
-        { label: "Companies", to: "/admin/companies", badge: pendingCompanies, badgeLabel: `${pendingCompanies} companies awaiting verification` },
-        { label: "Employers", to: "/admin/employers", badge: dormantEmployers, badgeLabel: `${dormantEmployers} employers have never signed in` },
-        { label: "Employees", to: "/admin/employees" },
-        { label: "Messages", to: "/admin/messages", badge: unreadMessages, badgeLabel: `${unreadMessages} unread messages` },
+        { label: "Overview", to: "/dashboard", end: true },
+        { label: "Companies", to: "/dashboard/companies", badge: pendingCompanies, badgeLabel: `${pendingCompanies} companies awaiting verification` },
+        { label: "Employers", to: "/dashboard/employers", badge: dormantEmployers, badgeLabel: `${dormantEmployers} employers have never signed in` },
+        { label: "Employees", to: "/dashboard/employees" },
+        { label: "Messages", to: "/dashboard/messages", badge: unreadMessages, badgeLabel: `${unreadMessages} unread messages` },
       ]}
       identity={{ eyebrow: "SUPER ADMIN", name: account?.display_name || account?.username || "Administrator", role: account?.role_label || "Administrator", detail: account?.email }}
       navLabel="Admin navigation"
       onLogout={onLogout}
+      token={token}
+      menu={[{ title: "Manage", links: [
+        { label: "Companies", to: "/dashboard/companies" },
+        { label: "Messages", to: "/dashboard/messages" },
+      ] }]}
     />
     <main className="dashboard-main topnav-main"><section className="workspace dashboard-workspace">
       {!atOverview && <BackButton />}
@@ -511,7 +715,7 @@ export default function AdminDashboard({ token, account, onLogout, onAuthError }
         <Route path="messages/:business" element={<MessagesPage token={token} onAuthError={onAuthError} />} />
         <Route path="employers" element={<EmployersPage token={token} onAuthError={onAuthError} />} />
         <Route path="employees" element={<EmployeesPage token={token} onAuthError={onAuthError} />} />
-        <Route path="*" element={<Navigate to="/admin" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </section></main>
   </>;

@@ -5,6 +5,8 @@ import CompanyCalendar from "./CompanyCalendar";
 import GoogleMeetPage from "./GoogleMeetPage";
 import ModalDialog from "./components/ModalDialog";
 import Payslip from "./components/Payslip";
+import LocationStatus from "./components/LocationStatus";
+import WorkplaceLocationCard, { WorkplaceLocationHint } from "./components/WorkplaceLocationCard";
 import { useConfirm } from "./components/ConfirmDialog";
 import { Link, Navigate, Route, Routes } from "react-router";
 import { approveContractWorker, calculatePayroll, decideContractTermination, deleteRecord, downloadContract, fetchCompanyThread, fetchEmailSettings, fetchEmployeePhoto, fetchRecords, fetchReports, fetchSalaryPaymentHistory, fetchSalaryPaymentPreview, initiateContractTermination, markCompanyThreadRead, markSalaryPaid, requestNewContractSignature, resendContractSignatureEmail, saveEmailSettings, saveRecord, sendCompanyMessage, sendContractForSignature } from "./api";
@@ -13,7 +15,7 @@ import Conversation from "./components/Conversation";
 import DashboardTopNav from "./components/DashboardTopNav";
 import { PasswordCard } from "./AccountPage";
 import { ACCESS_TOKEN, REFRESH_TOKEN } from "./constants";
-import { isWeekend, label, longDate, modules, money, shiftDate, today, upcomingEvents } from "./managerConfig";
+import { decisionText, isWeekend, label, longDate, modules, money, shiftDate, today, upcomingEvents } from "./managerConfig";
 
 function saveBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -133,10 +135,9 @@ function RecordField({ field, value, onChange, employees }) {
   return <div className={["textarea", "file", "richtext"].includes(field.type) ? "field-wide" : field.type === "checkbox" ? "checkbox-field" : ""}><label htmlFor={id}>{field.title}{field.optional && field.type !== "file" ? " (optional)" : ""}</label>{input}{field.hint && <small className="field-hint">{field.hint}</small>}</div>;
 }
 
-const markable = [["present", "Present"], ["remote", "Remote"], ["absent", "Absent"]];
 const rosterStates = [["present", "Present"], ["remote", "Remote"], ["absent", "Absent"], ["leave", "On leave"], ["unrecorded", "Not recorded"]];
 
-function AttendanceRoster({ date, setDate, rows, holiday, busy, token, onMark, onClear }) {
+function AttendanceRoster({ date, setDate, rows, holiday, token }) {
   const latest = today();
   const [now, setNow] = useState(0);
   useEffect(() => {
@@ -161,20 +162,15 @@ function AttendanceRoster({ date, setDate, rows, holiday, busy, token, onMark, o
       columns={[
         { title: "Employee", value: (row) => `${row.first_name} ${row.last_name}`, secondary: (row) => row.department, avatar: true },
         { title: "Status", value: (row) => row.state === "unrecorded" ? "Unrecorded" : row.state === "leave" ? "Leave" : label(row.state), badge: true },
-        { title: "Check-in", value: (row) => clockTime(row.record?.check_in_at) },
-        { title: "Check-out", value: (row) => clockTime(row.record?.check_out_at) },
+        { title: "Check-in", value: (row) => clockTime(row.record?.check_in_at), secondary: (row) => <LocationStatus record={row.record} prefix="check_in" /> },
+        { title: "Check-out", value: (row) => clockTime(row.record?.check_out_at), secondary: (row) => <LocationStatus record={row.record} prefix="check_out" /> },
         { title: "Live time", value: (row) => row.activeRecord ? runningTime(row.activeRecord.check_in_at, now) : "Not recorded" },
         { title: "Shifts", value: (row) => row.records?.map((record) => label(record.shift)).join(", ") },
         { title: "Total hours", value: (row) => row.totalHours },
-        { title: "Notes", value: (row) => row.record?.notes },
       ]}
-      rows={rows}
+      rows={rows.filter((row) => row.records.some((record) => record.check_in_at))}
       token={token}
-      empty={`No active employees had joined by ${date}.`}
-      actions={(row) => row.state === "leave" ? <span className="muted">On approved leave</span> : <>
-        {markable.map(([value, title]) => <button key={value} type="button" disabled={busy || row.record?.status === value} onClick={() => onMark(row, value)}>{row.record?.status === value ? `✓ ${title}` : title}</button>)}
-        {row.record && <button type="button" className="danger-link" disabled={busy} onClick={() => onClear(row)}>Clear</button>}
-      </>}
+      empty={date === latest ? "Nobody has checked in today yet." : `Nobody checked in on ${longDate(date)}.`}
     />
   </section>;
 }
@@ -230,7 +226,6 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [terminationFields, setTerminationFields] = useState({ reason: "", proposed_last_working_date: today(), response_notes: "" });
   const [leaveViewing, setLeaveViewing] = useState(null);
-  const [managedEmployeeId, setManagedEmployeeId] = useState(null);
   const [signatureMessage, setSignatureMessage] = useState("");
   const [rosterDate, setRosterDate] = useState(today);
   const [payrollExtras, setPayrollExtras] = useState({ loaded: false, calculations: {} });
@@ -267,10 +262,16 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
     const payroll = (data.payroll || []).find((row) => row.employee === person.id
       && row.period_start <= `${payMonth}-31` && row.period_end >= `${payMonth}-01`);
     if (!person.is_active && !payroll) return [];
-    return [{ ...salary, employee_name: `${person.first_name} ${person.last_name}`, pay_status: payroll ? label(payroll.status) : "Unpaid",
-      pay_key: `${salary.id}:${salary.monthly_amount}:${payroll ? `${payroll.id}-${payroll.status}-${payroll.deductions}` : ""}` }];
+    const contract = (data.contracts || [])
+      .filter((row) => row.employee === person.id && row.signature_status === "signed" && row.worker_approval_status === "approved"
+        && row.status !== "draft" && row.start_date <= `${payMonth}-31` && (!row.end_date || row.end_date >= `${payMonth}-01`))
+      .sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)) || b.id - a.id)[0];
+    const monthly = contract?.monthly_salary ? { monthly_amount: contract.monthly_salary, currency: contract.salary_currency } : {};
+    return [{ ...salary, ...monthly, contract, employee_name: `${person.first_name} ${person.last_name}`,
+      pay_status: payroll ? label(payroll.status) : contract ? "Unpaid" : "No contract",
+      pay_key: `${salary.id}:${monthly.monthly_amount || salary.monthly_amount}:${payroll ? `${payroll.id}-${payroll.status}-${payroll.deductions}` : ""}` }];
   });
-  const toPayKey = toPay.map((row) => row.pay_key).join(",");
+  const toPayKey = toPay.filter((row) => row.pay_status !== "No contract").map((row) => row.pay_key).join(",");
   useEffect(() => {
     if (!toPayKey) return undefined;
     let cancelled = false;
@@ -281,6 +282,7 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
   }, [token, payMonth, toPayKey]);
   const previewFor = (row) => payPreviews.month === payMonth ? payPreviews.rows[row.id] : undefined;
   const previewMoney = (row, key) => {
+    if (row.pay_status === "No contract") return "—";
     const preview = previewFor(row);
     return preview === undefined ? "Calculating…" : preview ? money(preview[key], preview.currency) : "Unavailable";
   };
@@ -289,6 +291,7 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
     ? money(unpaidRows.reduce((sum, row) => sum + Number(previewFor(row).net_salary), 0), unpaidRows[0].currency) : null;
   const payColumns = [
     { title: "Employee", value: (row) => row.employee_name },
+    { title: "Contract", value: (row) => row.contract?.title || "No signed and approved contract for this month" },
     { title: "Monthly salary", value: (row) => money(row.monthly_amount, row.currency) },
     { title: "Deductions", value: (row) => previewMoney(row, "total_deductions") },
     { title: "Net salary", value: (row) => previewMoney(row, "net_salary") },
@@ -309,18 +312,6 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
   const contractsFor = (employeeId) => (data.contracts || [])
     .filter((row) => row.employee === employeeId && row.document_name)
     .sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)));
-  const managedEmployee = employees.find((person) => person.id === managedEmployeeId) || null;
-  const managedContracts = managedEmployee ? (data.contracts || [])
-    .filter((contract) => contract.employee === managedEmployee.id)
-    .sort((a, b) => String(b.start_date).localeCompare(String(a.start_date))) : [];
-  const managedAttendance = managedEmployee ? (data.attendance || [])
-    .filter((record) => record.employee === managedEmployee.id)
-    .sort((a, b) => `${b.date}-${b.id}`.localeCompare(`${a.date}-${a.id}`))
-    .slice(0, 8) : [];
-  const managedLeave = managedEmployee ? (data.leave || [])
-    .filter((record) => record.employee === managedEmployee.id)
-    .sort((a, b) => String(b.requested_at || b.start_date).localeCompare(String(a.requested_at || a.start_date)))
-    .slice(0, 8) : [];
   const rows = (data[resource] || []).map((row) => {
     if (!row.employee || resource === "payroll") return row;
     const employee = employees.find((person) => person.id === row.employee);
@@ -397,9 +388,12 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
         next.department = employee?.department || "Operations";
       }
       if (resource === "payroll" && name === "employee" && !editing) {
+        const contract = (data.contracts || []).find((record) => record.employee === Number(value) && record.monthly_salary
+          && record.signature_status === "signed" && record.worker_approval_status === "approved"
+          && record.start_date <= current.period_end && (!record.end_date || record.end_date >= current.period_start));
         const salary = data.salaries.find((record) => record.employee === Number(value) && record.effective_date <= current.period_start);
-        next.base_salary = salary?.monthly_amount || "";
-        next.currency = salary?.currency || "RWF";
+        next.base_salary = contract?.monthly_salary || salary?.monthly_amount || "";
+        next.currency = contract?.salary_currency || salary?.currency || "RWF";
       }
       if (resource === "payroll" && name === "status") next.paid_date = value === "paid" ? today() : "";
       return next;
@@ -417,7 +411,8 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
       return;
     }
     if (saveAndSend && !await confirm({ title: "Send contract for signature?", message: `Save and email this contract to ${recipient?.email || "the selected employee"} for signature? You will not be able to edit or delete it after sending.`, confirmLabel: "Save and send" })) return;
-    const uploads = config.fields.filter((item) => item.type === "file" && form[item.name]);
+    const savedFields = resource === "employees" && editing ? config.fields.filter((item) => item.core) : config.fields;
+    const uploads = savedFields.filter((item) => item.type === "file" && form[item.name]);
     const oversized = uploads.find((item) => form[item.name].size > item.maxSize);
     if (oversized) {
       setError(`${oversized.title.split(" (")[0]} must be ${oversized.maxLabel} or smaller.`);
@@ -426,7 +421,7 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
     if (resource === "payroll" && form.status === "paid" && !await confirm({ title: "Mark payroll as paid?", message: "Its amounts and payslip will be locked after payment is recorded.", confirmLabel: "Mark as paid" })) return;
     setBusy(true);
     try {
-      let payload = Object.fromEntries(config.fields.filter((item) => item.type !== "file" && !item.readOnly).map((item) => [item.name, item.nullable && !form[item.name] ? null : form[item.name]]));
+      let payload = Object.fromEntries(savedFields.filter((item) => item.type !== "file" && !item.readOnly).map((item) => [item.name, item.nullable && !form[item.name] ? null : form[item.name]]));
       if (uploads.length) {
         const multipart = new FormData();
         Object.entries(payload).forEach(([key, value]) => multipart.append(key, value ?? ""));
@@ -471,14 +466,14 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
     finally { setBusy(false); }
   }
 
-  async function decideLeave(row, status, showPreview = true) {
+  async function decideLeave(row, status) {
     setBusy(true);
     setError("");
     setNotice("");
     try {
       const saved = await saveRecord(token, "leave", { status }, row.id);
       onChange("leave", saved);
-      if (showPreview) setLeaveViewing(saved);
+      setLeaveViewing(saved);
       setNotice(`${saved.employee_name}'s leave request was ${status}. An email notification was sent to the employee.`);
     } catch (err) { handleError(err); }
     finally { setBusy(false); }
@@ -530,6 +525,10 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
     try {
       const saved = await approveContractWorker(token, row.id);
       onChange("contracts", saved);
+      if (saved.monthly_salary) {
+        const salary = (await fetchRecords(token, "salaries").catch(() => [])).find((item) => item.employee === saved.employee);
+        if (salary) onChange("salaries", salary);
+      }
       if (saved.notification?.email_sent) setNotice(saved.notification.detail);
       else setError(saved.notification?.detail || "The worker was approved, but the congratulations email could not be sent.");
       return true;
@@ -603,33 +602,6 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
     finally { setBusy(false); }
   }
 
-  async function markAttendance(person, next) {
-    setBusy(true);
-    setError("");
-    setNotice("");
-    const record = person.record;
-    const hours = next === "absent" ? "0.00" : record && Number(record.hours_worked) > 0 ? record.hours_worked : "8.00";
-    try {
-      const saved = await saveRecord(token, "attendance", { employee: person.id, date: rosterDate, status: next, hours_worked: hours, notes: record?.notes || "" }, record?.id);
-      onChange("attendance", saved);
-      setNotice(`${person.first_name} ${person.last_name} marked ${next} on ${rosterDate}.`);
-    } catch (err) { handleError(err); }
-    finally { setBusy(false); }
-  }
-
-  async function clearAttendance(person) {
-    if (!await confirm({ title: "Remove attendance entry?", message: `Remove the attendance entry for ${person.first_name} ${person.last_name} on ${rosterDate}?`, confirmLabel: "Remove entry" })) return;
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await deleteRecord(token, "attendance", person.record.id);
-      onChange("attendance", person.record, true);
-      setNotice(`Attendance cleared for ${person.first_name} ${person.last_name} on ${rosterDate}.`);
-    } catch (err) { handleError(err); }
-    finally { setBusy(false); }
-  }
-
   function openCalculation(row) {
     setError("");
     setNotice("");
@@ -696,10 +668,10 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
     }
   }
 
-  // While hiring, ask only for what the employer knows; editing shows it all.
+  // While hiring, ask only for what the employer knows. An employee's other details are their own to edit.
   const collapsing = Boolean(config.collapseExtras) && !editing;
   const editableFields = resource === "attendance" && editing ? formFields.filter((field) => field.name !== "shift") : formFields;
-  const coreFields = collapsing ? editableFields.filter((field) => field.core) : editableFields;
+  const coreFields = collapsing || (resource === "employees" && editing) ? editableFields.filter((field) => field.core) : editableFields;
   const extraFields = collapsing ? formFields.filter((field) => !field.core) : [];
 
   const renderField = (field) => <div key={field.name} className={field.section ? "field-section field-wide" : undefined}>
@@ -724,7 +696,8 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
         : "Open a highlighted request to approve or reject it."}</p></span><span className="attention-open-label">Open</span></button>}
     {resource === "employees" && !account?.email_configured && <p className="message">Invitation emails are not being sent. <Link to="/dashboard/settings">Add a Gmail App Password in Settings</Link> so new hires receive their sign-in details.</p>}
     {config.fields.some((field) => field.type === "employee") && !employees.length && <p className="message"><Link to="/dashboard/employees">Add an employee</Link> to start recording {config.title.toLowerCase()}.</p>}
-    {resource === "attendance" && employees.length > 0 && <AttendanceRoster date={rosterDate} setDate={setRosterDate} rows={roster} holiday={holiday} busy={busy} token={token} onMark={markAttendance} onClear={clearAttendance} />}
+    {resource === "attendance" && <WorkplaceLocationHint token={token} />}
+    {resource === "attendance" && employees.length > 0 && <AttendanceRoster date={rosterDate} setDate={setRosterDate} rows={roster} holiday={holiday} token={token} />}
     {form && <ModalDialog title={`${editing ? "Edit" : "Add"} ${config.singular}`} wide={resource === "contracts" || config.fields.length > 6} onClose={() => { setForm(null); setEditing(null); }}><form className="record-form" ref={formRef} onSubmit={submit}>
       <h3>{editing ? "Edit" : "Add"} {config.singular}</h3>
       <fieldset disabled={busy}><div className="record-fields">{coreFields.map(renderField)}</div>
@@ -734,27 +707,24 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
       </details>}
       {resource === "contracts" && form.employee && <p className="message contract-recipient">Signature email recipient: <strong>{employees.find((person) => person.id === Number(form.employee))?.email || "Email unavailable"}</strong></p>}
       {editing?.document_name && <p className="muted">A document is attached. Choosing a new file replaces it.</p>}
-      {editing?.photo_name && <div className="photo-hint"><Avatar person={editing} token={token} /><p className="muted">A profile photo is attached. Choosing a new file replaces it.</p></div>}
-      {editing?.latest_contract && <div className="photo-hint"><p className="muted">{editing.latest_contract.title} is already on file. Upload another PDF to add a new contract; it will not replace the existing one.</p><button type="button" className="button button-outline" onClick={() => setViewing({ ...editing.latest_contract, employee_name: `${editing.first_name} ${editing.last_name}` })}>View current contract</button></div>}
       {resource === "payroll" && <div className="payroll-preview"><strong>Net pay: {money(Number(form.base_salary || 0) + Number(form.allowances || 0) - Number(form.deductions || 0), form.currency)}</strong><p>Review the base amount for this period. Deductions, tax, overtime, and partial periods are entered manually. Marking paid records payment; it does not transfer funds.</p></div>}
       <div className="form-actions"><button className="button button-coral" type="submit" value="draft">{busy ? "Saving…" : resource === "contracts" ? "Save draft" : "Save " + config.singular}</button>{resource === "contracts" && <button className="button button-coral" type="submit" value="send">{busy ? "Sending…" : "Save and send for signature"}</button>}<button className="button button-outline" type="button" onClick={() => { setForm(null); setEditing(null); }}>Cancel</button></div></fieldset>
     </form></ModalDialog>}
     {resource === "payroll" && <section className="panel records-panel" aria-label="Salaries to pay">
       <div className="records-toolbar"><span className="record-count">{unpaidRows.length} of {toPay.length} to pay for {payMonth}{unpaidTotal && ` · ${unpaidTotal} in total`}</span><div className="records-filters"><input type="month" aria-label="Pay month" value={payMonth} max={today().slice(0, 7)} onChange={(event) => { if (event.target.value) setPayMonth(event.target.value); }} /></div></div>
-      <DataTable columns={payColumns} rows={toPay} token={token} onRowClick={(row) => markPaid(row)} empty={<>No salaries are set for {payMonth}. <Link to="/dashboard/salaries">Add a salary</Link> to pay an employee.</>} actions={(row) => <>
+      <DataTable columns={payColumns} rows={toPay} token={token} onRowClick={(row) => { if (row.pay_status !== "No contract") markPaid(row); }} empty={<>No salaries are set for {payMonth}. Approve a signed <Link to="/dashboard/contracts">contract</Link> with a monthly salary to pay an employee.</>} actions={(row) => <>
         {row.pay_status === "Unpaid"
           ? <button className="button button-coral" type="button" disabled={busy} onClick={() => markPaid(row)}>Pay</button>
-          : <button type="button" onClick={() => markPaid(row)}>View payment</button>}
+          : row.pay_status !== "No contract" && <button type="button" onClick={() => markPaid(row)}>View payment</button>}
         <button type="button" onClick={() => openPaymentHistory(row)}>Payment history</button>
       </>} />
     </section>}
     <section className="panel records-panel" aria-label={config.title}>
       <div className="records-toolbar"><span className="record-count">{visible.length} {visible.length === 1 ? "record" : "records"}</span><div className="records-filters"><input type="search" aria-label={`Search ${config.title.toLowerCase()}`} placeholder="Search records…" value={search} onChange={(event) => setSearch(event.target.value)} />{statusField && <select aria-label="Filter by status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option>{statusField.options.map(([value, title]) => <option key={value} value={value}>{title}</option>)}</select>}<button className="button button-outline" type="button" disabled={!visible.length} onClick={() => exportCsv(`${resource}.csv`, config.columns, visible)}>Export CSV</button></div></div>
       <DataTable columns={config.columns} rows={visible} token={token} rowClassName={(row) => requiresAttention(row) ? "attention-row" : ""} onRowClick={resource === "leave" ? setLeaveViewing : undefined} empty={search || status ? "No records match these filters." : `No ${config.title.toLowerCase()} yet. Use Add ${config.singular} to get started.`} actions={(row) => <>
-        {resource === "employees" && <button className="button button-coral" type="button" onClick={() => setManagedEmployeeId(row.id)}>Manage</button>}
         {resource === "leave" && <button type="button" onClick={() => setLeaveViewing(row)}>Preview</button>}
         {resource === "leave" && row.status === "pending" && <><button className="button button-coral" type="button" disabled={busy} onClick={() => decideLeave(row, "approved")}>Approve</button><button type="button" disabled={busy} onClick={() => decideLeave(row, "rejected")}>Reject</button></>}
-        {resource !== "leave" && !(resource === "payroll" && row.status === "paid") && !(resource === "contracts" && row.signature_status !== "draft") && <><button type="button" disabled={busy} onClick={() => openForm(row)}>Edit</button><button type="button" disabled={busy} className="danger-link" onClick={() => remove(row)}>Delete</button></>}
+        {resource !== "leave" && !(resource === "payroll" && row.status === "paid") && !(resource === "contracts" && row.signature_status !== "draft") && !(resource === "salaries" && row.from_contract) && <><button type="button" disabled={busy} onClick={() => openForm(row)}>Edit</button><button type="button" disabled={busy} className="danger-link" onClick={() => remove(row)}>Delete</button></>}
         {resource === "contracts" && row.content && <button type="button" onClick={() => setDigitalViewing(row)}>Preview</button>}
         {resource === "contracts" && row.signature_status === "draft" && <button className="button button-coral" type="button" disabled={busy || !row.content} onClick={() => sendForSignature(row)}>Send for signature</button>}
         {resource === "contracts" && row.signature_status === "sent" && <button type="button" disabled={busy} onClick={() => openSignatureRequest(row, "resend")}>Resend signature email</button>}
@@ -782,6 +752,7 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
           : paying.preview.status === "draft"
             ? `A draft payroll record already covers ${paying.month} for ${paying.row.employee_name}. Review it in the payroll records list.`
             : `Review ${paying.row.employee_name}'s salary for ${paying.month}. Paying creates a locked payroll record and payslip.`}</p>
+        {paying.preview.contract && <p className="muted">Contract: <strong>{paying.preview.contract.title}</strong> ({paying.preview.contract.start_date} → {paying.preview.contract.end_date || "Ongoing"})</p>}
         <dl className="pay-breakdown">
           <div><dt>Monthly salary</dt><dd>{money(paying.preview.monthly_salary, paying.preview.currency)}</dd></div>
           <div><dt>Salary advances</dt><dd>{money(paying.preview.advance_deductions, paying.preview.currency)}</dd></div>
@@ -816,32 +787,9 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
     {digitalViewing && <DigitalContractDialog contract={digitalViewing} onClose={() => setDigitalViewing(null)} />}
     {attentionOpen && <ModalDialog title="Items needing attention" onClose={() => setAttentionOpen(false)}><section className="attention-picker"><p>Choose an item to review. It will remain here until you complete its action.</p>{attentionItems.map((item) => <button type="button" className="attention-picker-item" key={`${item.type}-${item.row.id}`} onClick={() => openAttentionItem(item)}><span><strong>{item.row.employee_name}</strong><small>{item.row.title || label(item.row.leave_type)}</small></span><span>{item.type === "worker" ? "Approve worker" : item.type === "termination" ? "Review termination" : "Review leave"}</span></button>)}</section></ModalDialog>}
     {workerApprovalViewing && <ModalDialog title="Worker approval" onClose={() => setWorkerApprovalViewing(null)}><section className="account-panel leave-preview"><h3>{workerApprovalViewing.employee_name}</h3><dl><dt>Contract</dt><dd>{workerApprovalViewing.title}</dd><dt>Department</dt><dd>{workerApprovalViewing.department || "Not recorded"}</dd><dt>Signed by</dt><dd>{workerApprovalViewing.signer_name || workerApprovalViewing.employee_name}</dd><dt>Signed at</dt><dd>{workerApprovalViewing.signed_at ? new Date(workerApprovalViewing.signed_at).toLocaleString() : "Not recorded"}</dd></dl><div className="form-actions">{workerApprovalViewing.content && <button className="button button-outline" type="button" onClick={() => setDigitalViewing(workerApprovalViewing)}>Preview contract</button>}<button className="button button-coral" type="button" disabled={busy} onClick={async () => { if (await approveWorker(workerApprovalViewing)) setWorkerApprovalViewing(null); }}>Approve worker</button></div></section></ModalDialog>}
-    {managedEmployee && <ModalDialog title={`Manage ${managedEmployee.first_name} ${managedEmployee.last_name}`} wide onClose={() => setManagedEmployeeId(null)}><section className="employee-manage-overview">
-      <div className="employee-manage-header"><Avatar person={managedEmployee} token={token} /><div><h3>{managedEmployee.first_name} {managedEmployee.last_name}</h3><p>{managedEmployee.job_title || "No job title"} · {managedEmployee.department || "No department"}</p><p>{managedEmployee.email}</p></div><button className="button button-outline" type="button" onClick={() => { setManagedEmployeeId(null); openForm(managedEmployee); }}>Edit employee</button></div>
-      <dl className="employee-manage-facts"><div><dt>Account</dt><dd>{managedEmployee.account_status === "pending_first_sign_in" ? "Invited" : label(managedEmployee.account_status)}</dd></div><div><dt>Employment</dt><dd>{managedEmployee.is_active ? "Active" : "Inactive"}</dd></div><div><dt>Date joined</dt><dd>{managedEmployee.date_joined}</dd></div><div><dt>Employment type</dt><dd>{label(managedEmployee.employment_type)}</dd></div><div><dt>Reports to</dt><dd>{managedEmployee.manager_name || "Not recorded"}</dd></div><div><dt>Phone</dt><dd>{managedEmployee.phone || "Not recorded"}</dd></div><div><dt>Address</dt><dd>{managedEmployee.address || "Not recorded"}</dd></div><div><dt>Emergency contact</dt><dd>{managedEmployee.emergency_contact || "Not recorded"}</dd></div><div><dt>Job description</dt><dd>{managedEmployee.job_description || "Not recorded"}</dd></div></dl>
-
-      <section className="employee-manage-section"><div className="list-heading"><h3>Contract</h3><Link to="/dashboard/contracts" onClick={() => setManagedEmployeeId(null)}>Open all contracts</Link></div>
-        {!managedContracts.length ? <p className="empty-state">No contract has been created for this employee.</p> : managedContracts.map((contract) => <article className="employee-manage-record" key={contract.id}><div><strong>{contract.title}</strong><p>{label(contract.status)} · {contract.signature_status === "sent" ? "Awaiting signature" : label(contract.signature_status)}</p>{contract.termination && <small>Termination: {label(contract.termination.status)}</small>}</div><div className="row-actions">
-          {contract.content && <button type="button" onClick={() => setDigitalViewing(contract)}>Preview</button>}
-          {contract.document_name && <button type="button" onClick={() => setViewing(contract)}>View file</button>}
-          {contract.signature_status === "draft" && <button className="button button-coral" type="button" disabled={busy || !contract.content} onClick={() => sendForSignature(contract)}>Send for signature</button>}
-          {contract.signature_status === "signed" && contract.worker_approval_status !== "approved" && <button className="button button-coral" type="button" disabled={busy} onClick={() => approveWorker(contract)}>Approve worker</button>}
-          {contract.signature_status === "signed" && contract.worker_approval_status === "approved" && contract.status === "active" && !["pending", "awaiting_acknowledgement"].includes(contract.termination?.status) && <button type="button" onClick={() => { setTerminationAction({ row: contract, mode: "initiate" }); setTerminationFields({ reason: "", proposed_last_working_date: today(), response_notes: "" }); }}>Initiate termination</button>}
-          {contract.termination?.initiated_by === "employee" && contract.termination.status === "pending" && <button className="button button-coral" type="button" onClick={() => { setTerminationAction({ row: contract, mode: "review" }); setTerminationFields({ reason: "", proposed_last_working_date: contract.termination.proposed_last_working_date, response_notes: "" }); }}>Review termination</button>}
-        </div></article>)}
-      </section>
-
-      <section className="employee-manage-section"><div className="list-heading"><h3>Leave requests</h3><Link to="/dashboard/leave" onClick={() => setManagedEmployeeId(null)}>Open all leave</Link></div>
-        {!managedLeave.length ? <p className="empty-state">No leave requests.</p> : managedLeave.map((leave) => <article className="employee-manage-record" key={leave.id}><div><strong>{label(leave.leave_type)}</strong><p>{leave.start_date} to {leave.end_date} · {label(leave.status)}</p><small>{leave.reason || "No reason provided"}</small></div><div className="row-actions"><button type="button" onClick={() => setLeaveViewing(leave)}>Preview</button>{leave.status === "pending" && <><button className="button button-coral" type="button" disabled={busy} onClick={() => decideLeave(leave, "approved", false)}>Approve</button><button type="button" disabled={busy} onClick={() => decideLeave(leave, "rejected", false)}>Reject</button></>}</div></article>)}
-      </section>
-
-      <section className="employee-manage-section"><div className="list-heading"><h3>Recent attendance / shifts</h3><Link to="/dashboard/attendance" onClick={() => setManagedEmployeeId(null)}>Open attendance</Link></div>
-        {!managedAttendance.length ? <p className="empty-state">No attendance recorded.</p> : <DataTable rows={managedAttendance} columns={[{ title: "Date", value: (row) => row.date }, { title: "Shift", value: (row) => label(row.shift) }, { title: "Check-in", value: (row) => clockTime(row.check_in_at) }, { title: "Check-out", value: (row) => clockTime(row.check_out_at) }, { title: "Hours", value: (row) => row.check_out_at ? row.hours_worked : "In progress" }]} />}
-      </section>
-    </section></ModalDialog>}
     {leaveViewing && <ModalDialog title="Leave request" onClose={() => setLeaveViewing(null)}><section className="account-panel leave-preview">
       <h3>{leaveViewing.employee_name}</h3>
-      <dl><dt>Leave type</dt><dd>{label(leaveViewing.leave_type)}</dd><dt>Start date</dt><dd>{leaveViewing.start_date}</dd><dt>End date</dt><dd>{leaveViewing.end_date}</dd><dt>Working days</dt><dd>{leaveViewing.days_requested}</dd><dt>Status</dt><dd>{label(leaveViewing.status)}</dd><dt>Reason</dt><dd>{leaveViewing.reason || "No reason provided"}</dd>{leaveViewing.decision_notes && <><dt>Decision notes</dt><dd>{leaveViewing.decision_notes}</dd></>}</dl>
+      <dl><dt>Leave type</dt><dd>{label(leaveViewing.leave_type)}</dd><dt>Start date</dt><dd>{leaveViewing.start_date}</dd><dt>End date</dt><dd>{leaveViewing.end_date}</dd><dt>Working days</dt><dd>{leaveViewing.days_requested}</dd><dt>Status</dt><dd>{label(leaveViewing.status)}</dd><dt>Requested</dt><dd>{new Date(leaveViewing.requested_at).toLocaleString()}</dd>{leaveViewing.status !== "pending" && leaveViewing.decided_at && <><dt>Decision</dt><dd>{decisionText(leaveViewing.status, leaveViewing.decided_by, leaveViewing.decided_at)}</dd></>}<dt>Reason</dt><dd>{leaveViewing.reason || "No reason provided"}</dd>{leaveViewing.decision_notes && <><dt>Decision notes</dt><dd>{leaveViewing.decision_notes}</dd></>}</dl>
       {leaveViewing.status === "pending" && <div className="form-actions"><button className="button button-coral" type="button" disabled={busy} onClick={() => decideLeave(leaveViewing, "approved")}>Approve and email employee</button><button className="button button-outline" type="button" disabled={busy} onClick={() => decideLeave(leaveViewing, "rejected")}>Reject and email employee</button></div>}
     </section></ModalDialog>}
     {signatureRequest && <ModalDialog title={signatureRequest.mode === "correct" ? "Request a corrected signature" : "Resend signature email"} onClose={() => setSignatureRequest(null)}><form className="record-form" onSubmit={submitSignatureRequest}>
@@ -998,6 +946,7 @@ function SettingsPage({ token, account, onAccountChange, onAuthError }) {
         </dl>
       </section>
       <PasswordCard token={token} forced={false} onChanged={passwordChanged} />
+      <WorkplaceLocationCard token={token} onAuthError={onAuthError} />
       <section className="panel record-form form-launch-card"><div><h3>Invitation email</h3><p className="muted">{configured ? `Emails are sent from ${form.email_host_user || "the platform email address"}.` : "Invitation email has not been configured."}</p></div>{canManage && <button className="button button-coral" type="button" onClick={() => { setError(""); setEditOpen(true); }}>{configured ? "Update email settings" : "Configure email"}</button>}</section>
     </div>
     {editOpen && <ModalDialog title="Invitation email settings" onClose={() => setEditOpen(false)}><form className="record-form" onSubmit={submit}>
@@ -1175,9 +1124,18 @@ export default function ManagerDashboard({ token, account, onLogout, onAuthError
   return <>
     <DashboardTopNav
       items={managerNavItems({ ...attention, messages: unreadMessages, "salary-advances": pendingAdvanceRequests })}
-      identity={{ eyebrow: account?.business_name || "MANAGER WORKSPACE", name: account?.display_name || account?.username || "Manager", role: account?.role_label || "Employer" }}
+      identity={{ eyebrow: account?.business_name || "MANAGER WORKSPACE", name: account?.display_name || account?.username || "Manager", role: account?.role_label || "Employer", detail: account?.email }}
       navLabel="Manager navigation"
       onLogout={onLogout}
+      token={token}
+      menu={[
+        { title: "Account", links: [{ label: "Settings", to: "/dashboard/settings" }] },
+        { title: "Manage", links: [
+          { label: account?.business_name ? `Company: ${account.business_name}` : "Company dashboard", to: "/dashboard" },
+          { label: "Messages", to: "/dashboard/messages" },
+          { label: "Reports", to: "/dashboard/reports" },
+        ] },
+      ]}
     />
     <main className="dashboard-main topnav-main"><section className="workspace dashboard-workspace">
       {error ? <div className="panel records-panel"><p className="message error" role="alert">{error}</p><button type="button" className="button button-coral" onClick={() => { setError(""); setRetry((value) => value + 1); }}>Retry loading</button></div> : !data ? <p className="empty-state" role="status">Loading manager workspace…</p> : <Routes>

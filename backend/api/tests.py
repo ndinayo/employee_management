@@ -22,6 +22,11 @@ class ManagerWorkflowTests(APITestCase):
             department="Operations", job_title="Analyst", date_joined="2026-01-01")
         self.employee.refresh_from_db()
 
+    def approved_contract(self, employee=None, **fields):
+        return Contract.objects.create(**{"employee": employee or self.employee, "title": "Employment",
+                                          "start_date": "2026-01-01", "signature_status": "signed",
+                                          "worker_approval_status": "approved", **fields})
+
     def payroll_data(self, **overrides):
         return {"employee": self.employee.id, "period_start": "2026-09-01", "period_end": "2026-09-30",
                 "base_salary": "10000.00", "allowances": "500.50", "deductions": "1500.25",
@@ -313,7 +318,27 @@ class ManagerWorkflowTests(APITestCase):
         for data in [{"monthly_amount": "-5"}, {"currency": "BAD"}]:
             self.assertEqual(self.client.patch(f'/api/salaries/{response.data["id"]}/', data, format="json").status_code, 400)
 
+    def test_decided_leave_cannot_be_edited(self):
+        leave = LeaveRequest.objects.create(employee=self.employee, start_date="2026-09-21", end_date="2026-09-22",
+                                            status="approved", decision_notes="Enjoy")
+        for change in [{"decision_notes": "Changed"}, {"status": "approved"}, {"status": "rejected"}]:
+            self.assertEqual(self.client.patch(f"/api/leave/{leave.pk}/", change, format="json").status_code, 400)
+        self.assertEqual(LeaveRequest.objects.get(pk=leave.pk).decision_notes, "Enjoy")
+
+    def test_payroll_needs_a_signed_and_approved_contract_covering_the_period(self):
+        self.assertEqual(self.client.post("/api/payroll/", self.payroll_data()).status_code, 400)
+        self.approved_contract(end_date="2026-08-31")
+        self.assertEqual(self.client.post("/api/payroll/", self.payroll_data()).status_code, 400)
+        Contract.objects.create(employee=self.employee, title="Unsigned", start_date="2026-09-01")
+        self.assertEqual(self.client.post("/api/payroll/", self.payroll_data()).status_code, 400)
+        current = self.approved_contract(title="Current", start_date="2026-09-01", monthly_salary=Decimal("10000"))
+        created = self.client.post("/api/payroll/", self.payroll_data())
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["contract"], current.pk)
+        self.assertEqual(created.data["contract_title"], "Current")
+
     def test_salary_and_payroll_default_to_rwf(self):
+        self.approved_contract()
         salary = self.client.post("/api/salaries/", {"employee": self.employee.id, "monthly_amount": "450000.00", "effective_date": "2026-01-01"})
         self.assertEqual(salary.status_code, 201, salary.data)
         self.assertEqual(salary.data["currency"], "RWF")
@@ -323,6 +348,7 @@ class ManagerWorkflowTests(APITestCase):
         self.assertEqual(payroll.data["currency"], "RWF")
 
     def test_mark_paid_records_payroll_from_the_salary(self):
+        self.approved_contract()
         salary = Salary.objects.create(employee=self.employee, monthly_amount=Decimal("450000.00"), effective_date="2026-01-01")
         response = self.client.post(f"/api/salaries/{salary.id}/mark_paid/")
         self.assertEqual(response.status_code, 201, response.data)
@@ -342,6 +368,7 @@ class ManagerWorkflowTests(APITestCase):
         self.assertEqual(self.client.patch(url, {"base_salary": "1"}, format="json").status_code, 400)
 
     def test_mark_paid_accepts_a_month_and_refuses_to_pay_twice(self):
+        self.approved_contract()
         salary = Salary.objects.create(employee=self.employee, monthly_amount=Decimal("100000.00"), effective_date="2026-01-01")
         first = self.client.post(f"/api/salaries/{salary.id}/mark_paid/", {"month": "2026-08"}, format="json")
         self.assertEqual(first.status_code, 201, first.data)
@@ -364,6 +391,7 @@ class ManagerWorkflowTests(APITestCase):
         self.assertEqual(Payroll.objects.count(), 0)
 
     def test_payroll_decimal_totals_snapshot_and_paid_lock(self):
+        self.approved_contract()
         response = self.client.post("/api/payroll/", self.payroll_data())
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["gross_pay"], "10500.50")
@@ -382,6 +410,7 @@ class ManagerWorkflowTests(APITestCase):
         self.assertEqual(self.client.delete(url).status_code, 400)
 
     def test_payroll_rejects_invalid_money_dates_status_and_overlaps(self):
+        self.approved_contract()
         for overrides in [{"base_salary": "-1"}, {"deductions": "20000"}, {"period_end": "2026-08-31"},
                           {"status": "paid"}, {"paid_date": "2026-09-20"},
                           {"status": "paid", "paid_date": "2999-01-01"}]:
@@ -411,9 +440,10 @@ class ManagerWorkflowTests(APITestCase):
 
     def test_report_contract_boundaries_and_currency_totals(self):
         for end in ["2026-09-23", "2026-09-24", "2026-10-24", "2026-10-25"]:
-            Contract.objects.create(employee=self.employee, title=end, start_date="2026-01-01", end_date=end)
+            self.approved_contract(title=end, end_date=end)
         self.client.post("/api/payroll/", self.payroll_data(period_end="2026-09-20"))
         second = Employee.objects.create(first_name="Other", last_name="Person", email="other@example.com", department="HR", job_title="Lead", date_joined="2026-01-01")
+        self.approved_contract(second)
         self.client.post("/api/payroll/", self.payroll_data(employee=second.id, currency="USD", period_end="2026-09-20"))
         response = self.client.get("/api/reports/?date=2026-09-24&days=30")
         self.assertEqual([row["end_date"] for row in response.data["expiring_contracts"]], ["2026-09-24", "2026-10-24"])

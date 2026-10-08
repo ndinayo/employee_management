@@ -20,7 +20,7 @@ from PIL import Image
 from . import user_emails
 from .models import (AccountProfile, Announcement, AnnouncementRead, Attendance, Business,
                      CalendarEvent, CalendarEventRead, Contract, Employee, Holiday,
-                     InvitationEmailSettings, LeaveRequest, Payroll, Salary)
+                     InvitationEmailSettings, LeaveRequest, Payroll, Salary, WorkplaceLocation)
 
 
 class SignupTests(APITestCase):
@@ -246,6 +246,8 @@ class BusinessIsolationTests(APITestCase):
             self.assertEqual([row["id"] for row in self.client.get(f"/api/{resource}/").data], [record.pk])
 
     def test_salary_payment_in_own_business_uses_scoped_serializer(self):
+        Contract.objects.create(employee=self.records[0]["employees"], title="Signed", start_date="2026-01-01",
+                                signature_status="signed", worker_approval_status="approved")
         result = self.client.post(f"/api/salaries/{self.records[0]['salaries'].pk}/mark_paid/",
                                   {"month": "2026-08", "paid_date": "2026-08-31"}, format="json")
         self.assertEqual(result.status_code, 201, result.data)
@@ -610,6 +612,61 @@ class EmployeeOnboardingTests(APITestCase):
         forgotten.refresh_from_db()
         self.assertIsNone(forgotten.check_out_at)
 
+    def test_gps_check_in_and_out_are_verified_against_the_saved_workplace(self):
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
+        self.assertEqual(self.client.get("/api/workplace-location/").data["configured"], False)
+        self.assertEqual(self.client.put("/api/workplace-location/", {"latitude": -1.9441}, format="json").status_code, 400)
+        self.assertEqual(self.client.put("/api/workplace-location/", {"latitude": -1.9441, "longitude": 30.0619,
+                                                                     "radius_m": 5}, format="json").status_code, 400)
+        saved = self.client.put("/api/workplace-location/", {"latitude": -1.9441, "longitude": 30.0619}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual((saved.data["configured"], saved.data["radius_m"]), (True, 100))
+
+        self.client.force_authenticate(employee.account.user)
+        self.assertEqual(self.client.get("/api/workplace-location/").status_code, 403)
+        state = self.client.get("/api/me/attendance/").data
+        self.assertEqual((state["workplace_configured"], state["workplace_radius_m"]), (True, 100))
+        half = self.client.post("/api/me/attendance/", {"action": "check_in", "time": "00:01", "latitude": -1.944},
+                                format="json")
+        self.assertEqual(half.status_code, 400)
+        checked_in = self.client.post("/api/me/attendance/", {"action": "check_in", "time": "00:01",
+                                                              "latitude": -1.9445, "longitude": 30.0619,
+                                                              "accuracy": 12.4}, format="json")
+        self.assertEqual(checked_in.status_code, 200, checked_in.data)
+        self.assertEqual(checked_in.data["attendance"]["check_in_location_status"], "inside")
+        self.assertEqual(checked_in.data["attendance"]["check_in_distance_m"], 44)
+        checked_out = self.client.post("/api/me/attendance/", {"action": "check_out", "time": "23:59",
+                                                               "latitude": -1.9541, "longitude": 30.0619}, format="json")
+        self.assertEqual(checked_out.status_code, 200, checked_out.data)
+        self.assertEqual(checked_out.data["attendance"]["check_out_location_status"], "outside")
+        self.assertEqual(checked_out.data["attendance"]["check_out_distance_m"], 1112)
+        record = Attendance.objects.get(employee=employee)
+        self.assertEqual(record.check_in_accuracy_m, 12)
+        self.assertEqual(record.hours_worked, Decimal("23.97"))
+
+        self.client.force_authenticate(self.employer)
+        edited = self.client.patch(f"/api/attendance/{record.pk}/", {"check_out_location_status": "inside",
+                                                                     "notes": "Reviewed"}, format="json")
+        self.assertEqual(edited.status_code, 200, edited.data)
+        self.assertEqual(edited.data["check_out_location_status"], "outside")
+        widened = self.client.patch("/api/workplace-location/", {"radius_m": 2000}, format="json")
+        self.assertEqual(widened.data["radius_m"], 2000)
+
+    def test_check_without_coordinates_is_unavailable_only_when_a_workplace_is_saved(self):
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
+        self.client.force_authenticate(employee.account.user)
+        unverified = self.client.post("/api/me/attendance/", {"action": "check_in", "time": "00:01"}, format="json")
+        self.assertEqual(unverified.status_code, 200, unverified.data)
+        self.assertEqual(unverified.data["attendance"]["check_in_location_status"], "")
+        WorkplaceLocation.objects.create(business=self.business, latitude=Decimal("-1.9441"), longitude=Decimal("30.0619"))
+        checked_out = self.client.post("/api/me/attendance/", {"action": "check_out", "time": "23:59"}, format="json")
+        self.assertEqual(checked_out.status_code, 200, checked_out.data)
+        self.assertEqual(checked_out.data["attendance"]["check_out_location_status"], "unavailable")
+
     def test_night_shift_can_check_out_after_midnight(self):
         self.hire()
         employee = Employee.objects.get(email="aline@example.com")
@@ -728,6 +785,11 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertNotIn("alert", created.data["content"])
 
         contract_id = created.data["id"]
+        unpaid = self.client.post(f"/api/contracts/{contract_id}/send-for-signature/", {}, format="json")
+        self.assertEqual(unpaid.status_code, 400)
+        self.assertIn("monthly_salary", unpaid.data)
+        self.assertEqual(self.client.patch(f"/api/contracts/{contract_id}/", {
+            "monthly_salary": "650000.00", "salary_currency": "RWF"}, format="json").status_code, 200)
         sent = self.client.post(f"/api/contracts/{contract_id}/send-for-signature/", {}, format="json")
         self.assertEqual(sent.status_code, 200, sent.data)
         self.assertEqual(sent.data["signature_status"], "sent")
@@ -735,7 +797,7 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertTrue(sent.data["notification"]["email_sent"])
         self.assertIsNotNone(sent.data["notification_sent_at"])
         self.assertEqual(mail.outbox[0].to, ["aline@example.com"])
-        self.assertIn(f"/MyAccount/contract?contract={contract_id}", mail.outbox[0].body)
+        self.assertIn(f"/dashboard/contract?contract={contract_id}", mail.outbox[0].body)
         resent = self.client.post(f"/api/contracts/{contract_id}/resend-signature-email/", {}, format="json")
         self.assertEqual(resent.status_code, 200, resent.data)
         self.assertTrue(resent.data["email_sent"])
@@ -784,6 +846,19 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertEqual(approved.data["worker_approval_status"], "approved")
         self.assertEqual(mail.outbox[-1].to, ["aline@example.com"])
         self.assertIn("Congratulations", mail.outbox[-1].subject)
+        salary = Salary.objects.get(employee=employee)
+        self.assertEqual(salary.monthly_amount, Decimal("650000.00"))
+        self.assertEqual(self.client.patch(f"/api/salaries/{salary.pk}/", {"monthly_amount": "1"},
+                                           format="json").status_code, 400)
+        self.assertEqual(self.client.delete(f"/api/salaries/{salary.pk}/").status_code, 400)
+        paid = self.client.post(f"/api/salaries/{salary.pk}/mark_paid/", {"month": "2026-10"}, format="json")
+        self.assertEqual(paid.status_code, 201, paid.data)
+        self.assertEqual(paid.data["contract"], contract_id)
+        self.assertEqual(paid.data["contract_title"], "Employment agreement")
+        self.assertEqual(Decimal(paid.data["base_salary"]), Decimal("650000.00"))
+        early = self.client.post(f"/api/salaries/{salary.pk}/mark_paid/", {"month": "2026-09"}, format="json")
+        self.assertEqual(early.status_code, 400)
+        self.assertIn("no signed and approved contract", str(early.data))
         correction = self.client.post(f"/api/contracts/{contract_id}/request-new-signature/", {
             "message": "Please sign again using your complete legal name.",
         }, format="json")

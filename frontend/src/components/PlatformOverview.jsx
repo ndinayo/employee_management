@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { fetchAdminOverview } from "../api";
+import { fetchAdminActivity, fetchAdminOverview } from "../api";
 
-// Every figure on this page comes from /api/admin/overview/, counted from live
-// rows. Nothing here is a fixed value.
+// Every figure on this page comes from /api/admin/overview/ and
+// /api/admin/activity/, counted from live rows. Nothing here is a fixed value.
 
 function shortDate(value) {
   if (!value) return "Never";
@@ -36,7 +36,7 @@ function CompanyList({ title, description, rows, empty, stamp }) {
     <p className="panel-note">{description}</p>
     {!rows.length ? <p className="empty-state">{empty}</p> : <ul className="platform-list">
       {rows.map((row) => <li key={row.id}>
-        <Link to={`/admin/companies?company=${row.id}`}>
+        <Link to={`/dashboard/companies?company=${row.id}`}>
           <strong>{row.name}</strong>
           <small>
             {row.employer_username || "No employer account"}
@@ -56,8 +56,8 @@ export default function PlatformOverview({ token, onAuthError }) {
 
   useEffect(() => {
     let cancelled = false;
-    const load = () => fetchAdminOverview(token).then((result) => {
-      if (!cancelled) { setData(result); setError(""); }
+    const load = () => Promise.all([fetchAdminOverview(token), fetchAdminActivity(token)]).then(([result, activity]) => {
+      if (!cancelled) { setData({ ...result, activity }); setError(""); }
     }).catch((err) => {
       if (!cancelled) { setError(err.message); onAuthError(err); }
     });
@@ -75,7 +75,8 @@ export default function PlatformOverview({ token, onAuthError }) {
     <p className="empty-state" role="status">Loading the platform…</p>
   </>;
 
-  const { scale, lifecycle, usage, issues, messages } = data;
+  const { scale, lifecycle, usage, issues, messages, activity } = data;
+  const counts = activity.counts;
   const growth = usage.growth_percent;
   const attention = issues.dormant_employers + issues.suspended_employers
     + issues.companies_without_employer + issues.failed_invitations
@@ -85,22 +86,22 @@ export default function PlatformOverview({ token, onAuthError }) {
     <div className="section-heading"><div>
       <p className="eyebrow dark-eyebrow">PLATFORM</p>
       <h2>Platform overview</h2>
-      <p>Every company on the platform and the accounts that run them. Each company&apos;s own
-        records stay inside its employer&apos;s workspace.</p>
+      <p>Every company on the platform and the accounts that run them. Company activity is shown
+        as counts only; each company&apos;s own records stay inside its employer&apos;s workspace.</p>
     </div></div>
     {error && <p className="message error" role="alert">{error}</p>}
 
     <h3 className="platform-heading">Platform scale</h3>
     <div className="summary-row platform-tiles">
-      <Tile title="Companies" value={scale.companies} to="/admin/companies"
+      <Tile title="Companies" value={scale.companies} to="/dashboard/companies"
             note={`${scale.companies_this_month} added this month`} />
-      <Tile title="Active companies" value={scale.active_companies} to="/admin/companies?status=active" />
-      <Tile title="Awaiting verification" value={scale.pending_companies} to="/admin/companies?status=pending"
+      <Tile title="Active companies" value={scale.active_companies} to="/dashboard/companies?status=active" />
+      <Tile title="Awaiting verification" value={scale.pending_companies} to="/dashboard/companies?status=pending"
             tone={scale.pending_companies ? "warn" : undefined} />
-      <Tile title="Suspended companies" value={scale.suspended_companies} to="/admin/companies?status=suspended"
+      <Tile title="Suspended companies" value={scale.suspended_companies} to="/dashboard/companies?status=suspended"
             tone={scale.suspended_companies ? "bad" : undefined} />
-      <Tile title="Employers" value={scale.employers} to="/admin/employers" />
-      <Tile title="Employees" value={scale.employees} to="/admin/employees"
+      <Tile title="Employers" value={scale.employers} to="/dashboard/employers" />
+      <Tile title="Employees" value={scale.employees} to="/dashboard/employees"
             note={`${scale.active_employees} active`} />
     </div>
 
@@ -113,6 +114,20 @@ export default function PlatformOverview({ token, onAuthError }) {
       <Tile title="Growth on last month" value={`${growth > 0 ? "+" : ""}${growth}%`}
             tone={growth > 0 ? "good" : growth < 0 ? "bad" : undefined}
             note={`${usage.companies_this_month} this month, ${usage.companies_last_month} last`} />
+    </div>
+
+    <h3 className="platform-heading">Platform activity</h3>
+    <div className="summary-row platform-tiles">
+      <Tile title="Checked in today" value={counts.checked_in_today} note={`${counts.on_shift_now} on shift now`} />
+      <Tile title="Shifts completed today" value={counts.shifts_completed_today} />
+      <Tile title="On leave today" value={counts.on_leave_today}
+            note={`${counts.leave_requests_pending} leave ${counts.leave_requests_pending === 1 ? "request" : "requests"} pending`} />
+      <Tile title="Signed contracts" value={counts.contracts_active} note={`${counts.contracts_awaiting_signature} awaiting signature`} />
+      <Tile title="Salaries paid this month" value={counts.payslips_this_month} note="Payslips issued" />
+      <Tile title="Announcements this month" value={counts.announcements_this_month}
+            note={`${counts.upcoming_events} calendar ${counts.upcoming_events === 1 ? "event" : "events"} in the next 30 days`} />
+      <Tile title="Workplace location set" value={activity.companies_with_workplace_location}
+            note={`of ${scale.companies} ${scale.companies === 1 ? "company" : "companies"}`} />
     </div>
     <h3 className="platform-heading">Company lifecycle</h3>
     <div className="platform-grid">
@@ -135,12 +150,12 @@ export default function PlatformOverview({ token, onAuthError }) {
     <h3 className="platform-heading">Account issues{attention > 0 && <span className="attention-badge">{attention}</span>}</h3>
     <div className="summary-row platform-tiles">
       <Tile title="Employers never signed in" value={issues.dormant_employers}
-            to="/admin/employers?status=dormant" tone={issues.dormant_employers ? "warn" : undefined} />
+            to="/dashboard/employers?status=dormant" tone={issues.dormant_employers ? "warn" : undefined} />
       <Tile title="Suspended employers" value={issues.suspended_employers}
-            to="/admin/employers?status=suspended" tone={issues.suspended_employers ? "bad" : undefined} />
+            to="/dashboard/employers?status=suspended" tone={issues.suspended_employers ? "bad" : undefined} />
       <Tile title="Disabled accounts" value={issues.disabled_accounts} note="Any role" />
       <Tile title="Companies with no employer" value={issues.companies_without_employer}
-            to="/admin/companies" tone={issues.companies_without_employer ? "warn" : undefined} />
+            to="/dashboard/companies" tone={issues.companies_without_employer ? "warn" : undefined} />
       <Tile title="Failed invitations" value={issues.failed_invitations}
             tone={issues.failed_invitations ? "bad" : undefined}
             note={`${issues.companies_with_failed_invitations} ${issues.companies_with_failed_invitations === 1 ? "company" : "companies"} affected`} />
@@ -151,9 +166,9 @@ export default function PlatformOverview({ token, onAuthError }) {
 
     <h3 className="platform-heading">Communication</h3>
     <div className="summary-row platform-tiles">
-      <Tile title="Unread messages" value={messages.unread} to="/admin/messages"
+      <Tile title="Unread messages" value={messages.unread} to="/dashboard/messages"
             tone={messages.unread ? "warn" : undefined} />
-      <Tile title="Awaiting your reply" value={messages.unresolved} to="/admin/messages"
+      <Tile title="Awaiting your reply" value={messages.unresolved} to="/dashboard/messages"
             tone={messages.unresolved ? "warn" : undefined} />
     </div>
     <section className="panel platform-panel">
@@ -162,7 +177,7 @@ export default function PlatformOverview({ token, onAuthError }) {
       {!messages.recent.length ? <p className="empty-state">No conversations yet.</p>
         : <ul className="platform-list">
           {messages.recent.map((row) => <li key={row.business}>
-            <Link to={`/admin/messages/${row.business}`}>
+            <Link to={`/dashboard/messages/${row.business}`}>
               <strong>{row.business_name}{row.awaiting_reply && <span className="attention-badge">1</span>}</strong>
               <small>{row.from_admin ? "You: " : ""}{row.body}</small>
             </Link>

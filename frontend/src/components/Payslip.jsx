@@ -18,7 +18,7 @@ export default function Payslip({ record, onClose, calculation }) {
       <p className="eyebrow dark-eyebrow">EMPLOYEE MANAGEMENT</p>
       <h2 id="payslip-title">{record.status === "draft" ? "Draft payslip" : "Payslip"} #{String(record.id).padStart(6, "0")}</h2>
       <p>{record.period_start} to {record.period_end}</p>
-      <div className="payslip-person"><strong>{record.employee_name}</strong><p>{record.job_title} · {record.department}</p><p>{record.employee_email}</p></div>
+      <div className="payslip-person"><strong>{record.employee_name}</strong><p>{record.job_title} · {record.department}</p><p>{record.employee_email}</p>{record.contract_title && <p>Contract: {record.contract_title}</p>}</div>
       <dl className="pay-breakdown">
         <div><dt>Base salary</dt><dd>{money(record.base_salary, record.currency)}</dd></div>
         <div><dt>Allowances</dt><dd>{money(record.allowances, record.currency)}</dd></div>

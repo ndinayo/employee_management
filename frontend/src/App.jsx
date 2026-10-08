@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import heroImage from "./assets/images/hero.jpeg";
 import { ACCESS_TOKEN, REFRESH_TOKEN } from "./constants";
-import { clockMyAttendance, fetchAccount } from "./api";
+import { clockMyAttendance, fetchAccount, fetchMyAttendance } from "./api";
+import { positionOrNull } from "./geolocation";
 import AuthForm from "./AuthForm";
 import EmployeeWorkspace from "./components/EmployeeWorkspace";
 import EmployerWorkspace from "./components/EmployerWorkspace";
@@ -68,6 +69,12 @@ function RememberEmployeeDestination() {
   const location = useLocation();
   sessionStorage.setItem("employeeSignInDestination", `${location.pathname}${location.search}`);
   return <Navigate to="/signin" replace />;
+}
+
+// Old /admin and /MyAccount links and bookmarks open the same page under /dashboard.
+function LegacyDashboardRedirect() {
+  const { pathname, search, hash } = useLocation();
+  return <Navigate to={`${pathname.replace(/^\/(admin|myaccount)/i, "/dashboard")}${search}${hash}`} replace />;
 }
 
 function HomePage({
@@ -247,8 +254,8 @@ function App() {
     setError("");
     const destination = sessionStorage.getItem("employeeSignInDestination");
     sessionStorage.removeItem("employeeSignInDestination");
-    navigate(!profile.can_manage && !profile.can_admin && destination?.startsWith("/MyAccount")
-      && (profile.workspace_approved || destination.toLowerCase().startsWith("/myaccount/contract"))
+    navigate(!profile.can_manage && !profile.can_admin && destination?.startsWith("/dashboard")
+      && (profile.workspace_approved || destination.startsWith("/dashboard/contract"))
       ? destination
       : workspacePath(profile));
   }
@@ -258,7 +265,15 @@ function App() {
   async function handleSignIn(access, profile, refresh) {
     if (!profile.can_manage && !profile.can_admin && profile.has_employee_record
         && profile.workspace_approved && !profile.must_change_password) {
-      await clockMyAttendance(access, "check_in", "day", new Date().toTimeString().slice(0, 5)).catch(() => {});
+      try {
+        const day = await fetchMyAttendance(access);
+        if (!(day.shifts || []).some((item) => item.check_in_at && !item.check_out_at)) {
+          const position = day.workplace_configured ? await positionOrNull(10000) : null;
+          await clockMyAttendance(access, "check_in", "day", new Date().toTimeString().slice(0, 5), position);
+        }
+      } catch {
+        // Signing in never depends on the automatic check-in.
+      }
     }
     handleAuthenticated(access, profile, refresh);
   }
@@ -284,9 +299,9 @@ function App() {
                     intent={path === "/" ? "" : path.slice(1)} />} />)}
     <Route path="/forgot-password" element={withSiteChrome(<ForgotPasswordPage />)} />
     <Route path="/reset-password" element={withSiteChrome(<ResetPasswordPage />)} />
-    <Route path="/MyAccount/*" element={!token ? <RememberEmployeeDestination /> : !account ? withSiteChrome(pendingAccount) : account.can_admin ? <Navigate to="/admin" replace /> : <EmployeeWorkspace account={account} token={token} onAccountChange={handleAuthenticated} onLogout={handleLogout} />} />
-    <Route path="/admin/*" element={!token ? <Navigate to="/signin" replace /> : !account ? pendingAccount : account.can_admin ? <AdminDashboard token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} /> : <Navigate to={workspacePath(account)} replace />} />
-    <Route path="/dashboard/*" element={!token ? <Navigate to="/signin" replace /> : !account ? pendingAccount : account.can_admin ? <Navigate to="/admin" replace /> : account.can_manage ? <EmployerWorkspace token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} onAccountChange={(partial) => setAccount((current) => current ? { ...current, ...partial } : current)} /> : <Navigate to="/MyAccount" replace />} />
+    <Route path="/MyAccount/*" element={<LegacyDashboardRedirect />} />
+    <Route path="/admin/*" element={<LegacyDashboardRedirect />} />
+    <Route path="/dashboard/*" element={!token ? <RememberEmployeeDestination /> : !account ? pendingAccount : account.can_admin ? <AdminDashboard token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} /> : account.can_manage ? <EmployerWorkspace token={token} account={account} onLogout={handleLogout} onAuthError={handleAuthError} onAccountChange={(partial) => setAccount((current) => current ? { ...current, ...partial } : current)} /> : <EmployeeWorkspace account={account} token={token} onAccountChange={handleAuthenticated} onLogout={handleLogout} />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>;
 }

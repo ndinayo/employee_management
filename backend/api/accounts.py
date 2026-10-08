@@ -33,13 +33,14 @@ from PIL import Image, UnidentifiedImageError
 from . import leave_management, onboarding
 from .models import (AccountProfile, Announcement, AnnouncementRead, Attendance, Business,
                      CalendarEvent, CalendarEventRead, Contract, ContractTerminationRequest, Employee,
-                     InvitationEmailSettings, LeaveBalance, LeaveRequest)
+                     InvitationEmailSettings, LeaveBalance, LeaveRequest, WorkplaceLocation)
 from .permissions import can_manage, is_admin
 from .schema import (RESPONSE_400, RESPONSE_401, RESPONSE_403_WORKSPACE, AccountSerializer,
                      AuthenticatedAccountSerializer, DetailSerializer,
                      EmailSettingsResponseSerializer, MyAttendanceStateSerializer,
                      MyLeaveOverviewSerializer, TokenPairSerializer, with_errors)
 from .serializers import ContractTerminationSerializer, LeaveBalanceSerializer
+from .workplace import PositionSerializer, blank_location, location_fields
 
 # Documentation-only helpers. None of this takes part in handling a request.
 RECORD_ID = OpenApiParameter(
@@ -845,10 +846,12 @@ class MyCalendarReadAllView(APIView):
 class MyAttendanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Attendance
-        fields = ["id", "date", "shift", "status", "hours_worked", "check_in_at", "check_out_at"]
+        fields = ["id", "date", "shift", "status", "hours_worked", "check_in_at", "check_out_at",
+                  "check_in_location_status", "check_in_distance_m", "check_out_location_status",
+                  "check_out_distance_m"]
 
 
-class AttendanceClockSerializer(serializers.Serializer):
+class AttendanceClockSerializer(PositionSerializer):
     action = serializers.ChoiceField(choices=["check_in", "check_out"])
     shift = serializers.ChoiceField(choices=["day", "night"], default="day")
     time = serializers.TimeField()
@@ -871,7 +874,11 @@ class AttendanceClockSerializer(serializers.Serializer):
             "another is still open, clock in before your joining date, or clock in on a day "
             "covered by approved leave. A night-shift check-out earlier than its check-in is "
             "treated as the next morning. `hours_worked` is computed on check-out and capped "
-            "at 24."
+            "at 24.\n\n"
+            "Send the device's `latitude`/`longitude` (and `accuracy`) when your employer has "
+            "saved a workplace location. The server measures the distance and records the "
+            "check as `inside` or `outside` the allowed radius, or `unavailable` without "
+            "coordinates. Being outside never blocks the check."
         ),
         request=AttendanceClockSerializer,
         responses=workspace_responses({200: MyAttendanceStateSerializer}),
@@ -899,11 +906,14 @@ class MyAttendanceView(APIView):
         shifts = list(Attendance.objects.filter(employee=employee, date=date).order_by("id"))
         attendance = next((item for item in shifts if item.shift == selected_shift), None)
         total = sum((item.hours_worked for item in shifts), Decimal("0.00"))
+        workplace = WorkplaceLocation.objects.filter(business_id=employee.business_id).first()
         return {
             "date": date,
             "attendance": MyAttendanceSerializer(attendance).data if attendance else None,
             "shifts": MyAttendanceSerializer(shifts, many=True).data,
             "total_hours": f"{total:.2f}",
+            "workplace_configured": workplace is not None,
+            "workplace_radius_m": workplace.radius_m if workplace else None,
         }
 
     def get(self, request):
@@ -924,6 +934,7 @@ class MyAttendanceView(APIView):
         action = serializer.validated_data["action"]
         shift = serializer.validated_data["shift"]
         selected_time = serializer.validated_data["time"]
+        position = serializer.validated_data if serializer.validated_data.get("latitude") is not None else None
         now = timezone.now()
         date = timezone.localdate(now)
         if action == "check_in" and date < employee.date_joined:
@@ -959,6 +970,9 @@ class MyAttendanceView(APIView):
                 attendance.hours_worked = Decimal("0.00")
                 attendance.check_in_at = recorded_at
                 attendance.check_out_at = None
+                for field, value in {**location_fields(employee.business_id, "check_in", position),
+                                     **blank_location("check_out")}.items():
+                    setattr(attendance, field, value)
                 attendance.save()
             else:
                 if not attendance or not attendance.check_in_at:
@@ -977,7 +991,10 @@ class MyAttendanceView(APIView):
                     Decimal("24.00"),
                     (Decimal(str(seconds)) / Decimal("3600")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
                 )
-                attendance.save(update_fields=["check_out_at", "status", "hours_worked"])
+                checked = location_fields(employee.business_id, "check_out", position)
+                for field, value in checked.items():
+                    setattr(attendance, field, value)
+                attendance.save(update_fields=["check_out_at", "status", "hours_worked", *checked])
         return Response(self.response_data(employee, attendance.date, shift))
 
 
@@ -1134,7 +1151,7 @@ class MyContractSerializer(serializers.ModelSerializer):
         model = Contract
         fields = [
             "id", "employee_name", "business_name", "title", "department", "start_date", "end_date", "status",
-            "content", "employer_message", "signature_status", "sent_at", "signed_at", "signer_name", "signature_data",
+            "monthly_salary", "salary_currency", "content", "employer_message", "signature_status", "sent_at", "signed_at", "signer_name", "signature_data",
             "worker_approval_status", "worker_approved_at", "worker_approved_by",
             "termination",
         ]

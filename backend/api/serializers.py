@@ -6,7 +6,7 @@ from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from django.utils import timezone
 
-from . import leave_management, onboarding
+from . import contract_pay, leave_management, onboarding
 from .contract_content import sanitize_contract_html
 from .models import (Employee, Contract, ContractTerminationRequest, Attendance,
                      LeaveBalance, LeaveRequest, Holiday, Announcement,
@@ -223,6 +223,14 @@ class ContractSerializer(ManagerRecordSerializer):
             raise serializers.ValidationError("Contract documents must be 10 MB or smaller.")
         return value
 
+    def validate_salary_currency(self, value):
+        return self.validate_currency(value)
+
+    def validate_monthly_salary(self, value):
+        if value is not None and value <= 0:
+            raise serializers.ValidationError("The monthly salary must be greater than zero.")
+        return value
+
     def validate(self, attrs):
         if self.instance and self.instance.signature_status != "draft":
             raise serializers.ValidationError("A contract cannot be edited after it has been sent for signature.")
@@ -253,7 +261,7 @@ class ContractSerializer(ManagerRecordSerializer):
         model = Contract
         fields = [
             "id", "employee", "employee_name", "employee_email", "revision_of", "employer_message", "title", "department", "start_date", "end_date", "status",
-            "terms", "content", "document", "document_name", "signature_status", "sent_at",
+            "monthly_salary", "salary_currency", "terms", "content", "document", "document_name", "signature_status", "sent_at",
             "notification_sent_at", "signed_at", "signer_name", "signature_data", "worker_approval_status",
             "worker_approved_at", "worker_approved_by", "termination", "created_at",
         ]
@@ -280,7 +288,9 @@ class AttendanceSerializer(ManagerRecordSerializer):
     class Meta:
         model = Attendance
         fields = "__all__"
-        read_only_fields = ["check_in_at", "check_out_at"]
+        read_only_fields = ["check_in_at", "check_out_at"] + [
+            f"{prefix}_{name}" for prefix in ("check_in", "check_out")
+            for name in ("location_status", "latitude", "longitude", "distance_m", "accuracy_m")]
 
 
 class LeaveSerializer(ManagerRecordSerializer):
@@ -298,8 +308,7 @@ class LeaveSerializer(ManagerRecordSerializer):
             if attempted:
                 raise serializers.ValidationError(
                     "Employers cannot edit an employee's leave request. They may only approve or reject it.")
-            next_status = attrs.get("status", self.instance.status)
-            if self.instance.status != "pending" and next_status != self.instance.status:
+            if self.instance.status != "pending":
                 raise serializers.ValidationError("A completed leave decision cannot be changed.")
         self.validate_dates(attrs)
         employee = self.value(attrs, "employee")
@@ -448,6 +457,27 @@ class CalendarEventSerializer(serializers.ModelSerializer):
 
 
 class SalarySerializer(ManagerRecordSerializer):
+    from_contract = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.CharField(allow_null=True, help_text=(
+        "Title of the approved contract this salary comes from. Such a salary is read-only.")))
+    def get_from_contract(self, obj):
+        contract = contract_pay.current_contract_salary(obj.employee)
+        return contract.title if contract else None
+
+    @staticmethod
+    def reject_contract_salary(employee):
+        contract = contract_pay.current_contract_salary(employee)
+        if contract is not None:
+            raise serializers.ValidationError(
+                f"{employee}'s salary is set by the contract “{contract.title}”. Change it with a new contract.")
+
+    def validate(self, attrs):
+        self.reject_contract_salary(self.value(attrs, "employee"))
+        if self.instance and "employee" in attrs and attrs["employee"] != self.instance.employee:
+            self.reject_contract_salary(self.instance.employee)
+        return attrs
+
     class Meta:
         model = Salary
         fields = "__all__"
@@ -457,6 +487,7 @@ class PayrollSerializer(ManagerRecordSerializer):
     employee_name = serializers.CharField(read_only=True)
     gross_pay = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     net_pay = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    contract_title = serializers.CharField(source="contract.title", read_only=True, default=None)
 
     def validate(self, attrs):
         if self.instance and self.instance.status == "paid":
@@ -464,6 +495,7 @@ class PayrollSerializer(ManagerRecordSerializer):
         self.validate_dates(attrs, "period_start", "period_end")
         employee = self.value(attrs, "employee")
         start, end = self.value(attrs, "period_start"), self.value(attrs, "period_end")
+        attrs["contract"] = contract_pay.require_contract(employee, start, end)
         overlap = Payroll.objects.filter(employee=employee, period_start__lte=end, period_end__gte=start)
         if self.instance:
             overlap = overlap.exclude(pk=self.instance.pk)
@@ -496,4 +528,4 @@ class PayrollSerializer(ManagerRecordSerializer):
     class Meta:
         model = Payroll
         fields = "__all__"
-        read_only_fields = ["employee_email", "department", "job_title", "created_at"]
+        read_only_fields = ["contract", "employee_email", "department", "job_title", "created_at"]

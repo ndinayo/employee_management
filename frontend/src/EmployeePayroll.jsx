@@ -3,7 +3,7 @@ import ModalDialog from "./components/ModalDialog";
 import Payslip from "./components/Payslip";
 import { useConfirm } from "./components/ConfirmDialog";
 import { cancelMySalaryAdvanceRequest, fetchMyPayroll, requestMySalaryAdvance } from "./api";
-import { label, money } from "./managerConfig";
+import { decisionText, label, money } from "./managerConfig";
 
 const ADVANCE_STATUS = { disbursed: "Active", partially_repaid: "Partially repaid", repaid: "Repaid" };
 const EMPTY_REQUEST = { amount: "", reason: "" };
@@ -104,7 +104,7 @@ export default function EmployeePayroll({ token }) {
       <div className="leave-lists">
         <section className="panel account-panel"><h3>Advance requests</h3>
           {!requests.length ? <p className="empty-state">You have not requested a salary advance.</p> : <div className="leave-history-list">{requests.map((item) => <div className="leave-history-row" key={item.id}>
-            <div><strong>{money(item.amount, item.currency)}</strong><span>Requested {new Date(item.requested_at).toLocaleDateString()}{item.reason ? ` · ${item.reason}` : ""}</span>{item.decision_notes && <small>{item.decision_notes}</small>}</div>
+            <div><strong>{money(item.amount, item.currency)}</strong><span>Requested {new Date(item.requested_at).toLocaleDateString()}{item.reason ? ` · ${item.reason}` : ""}</span>{item.status !== "pending" && item.decided_at && <small>{decisionText(item.status, item.decided_by, item.decided_at)}</small>}{item.decision_notes && <small>{item.decision_notes}</small>}</div>
             <div><span className={`status-badge status-${item.status}`}>{label(item.status)}</span>{item.status === "pending" && <button className="text-button danger-link" disabled={busy} type="button" onClick={() => cancel(item)}>Cancel</button>}</div>
           </div>)}</div>}
         </section>

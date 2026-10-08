@@ -63,7 +63,7 @@ class MyPayrollView(APIView):
     def get(self, request):
         employee = my_employee(request)
         salary = Salary.objects.filter(employee=employee).first()
-        payslips = (Payroll.objects.filter(employee=employee, status="paid").select_related("calculation")
+        payslips = (Payroll.objects.filter(employee=employee, status="paid").select_related("calculation", "contract")
                     .prefetch_related("calculation__lines").order_by("-period_start"))
         advances = SalaryAdvance.objects.filter(employee=employee).prefetch_related("repayments__payroll__calculation")
         months = SalaryViewSet.monthly_payments(employee, salary.effective_date, paid_only=True) if salary else [

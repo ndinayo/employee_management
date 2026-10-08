@@ -9,6 +9,8 @@ from api.accounts import (AccountView, EmailSettingsView, MyContractSignView, My
                           MyCalendarView, MyLeaveDetailView, MyLeaveView, MyPhotoView, MyProfileView,
                           PasswordChangeView, PasswordResetConfirmView,
                           PasswordResetRequestView, SignupView, TokenView)
+from api.admin_activity import AdminActivityView, AdminCompanyActivityView, AdminEmployeeActivityView
+from api.admin_records import AdminRecordsView
 from api.dashboard import AdminHealthView, AdminOverviewView
 from api.my_payroll import MyPayrollView, MySalaryAdvanceRequestDetailView, MySalaryAdvanceRequestsView
 from api.messaging import (AdminMessageListView, AdminMessageReadAllView, AdminMessageReadView,
@@ -25,6 +27,10 @@ urlpatterns = [
     path("api/password-reset/confirm/", PasswordResetConfirmView.as_view(), name="password-reset-confirm"),
     path("api/admin/overview/", AdminOverviewView.as_view(), name="admin-overview"),
     path("api/admin/health/", AdminHealthView.as_view(), name="admin-health"),
+    path("api/admin/activity/", AdminActivityView.as_view(), name="admin-activity"),
+    path("api/admin/businesses/<int:pk>/activity/", AdminCompanyActivityView.as_view(), name="admin-company-activity"),
+    path("api/admin/employees/<int:pk>/activity/", AdminEmployeeActivityView.as_view(), name="admin-employee-activity"),
+    path("api/admin/records/<str:resource>/", AdminRecordsView.as_view(), name="admin-records"),
     path("api/admin/businesses/", AdminBusinessListView.as_view(), name="admin-businesses"),
     path("api/admin/businesses/<int:pk>/", AdminBusinessDetailView.as_view(), name="admin-business"),
     path("api/admin/employers/", EmployerListView.as_view(), name="admin-employers"),

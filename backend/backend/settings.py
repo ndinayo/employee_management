@@ -165,6 +165,7 @@ returns **404**.
         "CompanyStatusEnum": "api.schema.COMPANY_STATUS_CHOICES",
         "AssetIncidentStatusEnum": "api.schema.ASSET_INCIDENT_STATUS_CHOICES",
         "PayrollStatusEnum": "api.schema.PAYROLL_STATUS_CHOICES",
+        "AttendanceLocationStatusEnum": "api.models.LOCATION_STATUSES",
     },
     "POSTPROCESSING_HOOKS": [
         "drf_spectacular.hooks.postprocess_schema_enums",

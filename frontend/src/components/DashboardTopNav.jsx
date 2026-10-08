@@ -1,16 +1,26 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink, useLocation } from "react-router";
+import { Link, NavLink, useLocation } from "react-router";
+import { ACCESS_TOKEN, REFRESH_TOKEN } from "../constants";
+import ChangePasswordDialog from "./ChangePasswordDialog";
 
 // Top bar shared by the employer, super admin and employee dashboards. An item is
 // either a link ({ label, to, end, badge, badgeLabel, selected }) or a dropdown
 // ({ label, items }). `selected` overrides URL matching for pages that work out
-// the current view themselves.
-export default function DashboardTopNav({ items, identity, navLabel, onLogout }) {
+// the current view themselves. The account menu offers "Change password" when
+// given a `token`, a "View profile" link at `profileTo`, and extra `menu`
+// sections ({ title, links: [{ label, to }] }).
+export default function DashboardTopNav({ items, identity, navLabel, onLogout, token, profileTo, menu = [] }) {
   const { pathname } = useLocation();
   const [openMenu, setOpenMenu] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
   const header = useRef(null);
   const name = identity.name || "Account";
+  const accountLinks = menu.find((section) => section.title === "Account")?.links || [];
+  const sections = [
+    ...(token || accountLinks.length ? [{ title: "Account", links: accountLinks }] : []),
+    ...menu.filter((section) => section.title !== "Account" && section.links.length),
+  ];
 
   useEffect(() => {
     if (!openMenu && !mobileOpen) return;
@@ -53,12 +63,24 @@ export default function DashboardTopNav({ items, identity, navLabel, onLogout })
             <span className="topnav-account-name">{name}</span>
             <span className="topnav-caret" aria-hidden="true">▾</span>
           </button>
-          {openMenu === "account" && <div id="dashboard-account-menu" className="topnav-dropdown topnav-dropdown-end">
-            <div className="topnav-account-card">
-              <small>{identity.eyebrow}</small>
-              <strong>{name}</strong>
-              <span>{identity.role}</span>
-              {identity.detail && <span>{identity.detail}</span>}
+          {openMenu === "account" && <div id="dashboard-account-menu" className="topnav-dropdown topnav-dropdown-end topnav-profile-menu">
+            <div className="topnav-profile-head">
+              <span className="topnav-account-avatar topnav-profile-avatar" aria-hidden="true">{name[0].toUpperCase()}</span>
+              <div className="topnav-account-card">
+                <small>{identity.eyebrow}</small>
+                <strong>{name}</strong>
+                <span>{identity.role}</span>
+                {identity.detail && <span>{identity.detail}</span>}
+              </div>
+            </div>
+            {profileTo && <Link className="topnav-profile-view" to={profileTo} onClick={close}>View profile</Link>}
+            {sections.map((section) => <div key={section.title} className="topnav-menu-section">
+              <small>{section.title}</small>
+              {section.title === "Account" && token && <button type="button" className="topnav-dropdown-link" onClick={() => { close(); setChangingPassword(true); }}>Change password</button>}
+              {section.links.map((entry) => <Link key={entry.to} className="topnav-dropdown-link" to={entry.to} onClick={close}>{entry.label}</Link>)}
+            </div>)}
+            <div className="topnav-menu-section">
+              <button type="button" className="topnav-dropdown-link" onClick={() => { close(); onLogout(); }}>Sign out</button>
             </div>
           </div>}
         </div>
@@ -81,5 +103,9 @@ export default function DashboardTopNav({ items, identity, navLabel, onLogout })
         </div>;
       })}
     </nav>
+    {changingPassword && <ChangePasswordDialog token={token} onClose={() => setChangingPassword(false)} onChanged={(access, _user, refresh) => {
+      localStorage.setItem(ACCESS_TOKEN, access);
+      if (refresh) localStorage.setItem(REFRESH_TOKEN, refresh);
+    }} />}
   </header>;
 }

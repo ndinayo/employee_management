@@ -293,7 +293,7 @@ def send_contract_notification(contract, message=""):
     if connection is None:
         return False
     business = contract.employee.business.name if contract.employee.business_id else "Your employer"
-    destination = (f"{settings.FRONTEND_URL}/MyAccount/contract?contract={contract.pk}"
+    destination = (f"{settings.FRONTEND_URL}/dashboard/contract?contract={contract.pk}"
                    if settings.FRONTEND_URL else sign_in_url())
     employer_note = f"\nMessage from {business}:\n{message.strip()}\n" if message.strip() else ""
     try:
@@ -338,7 +338,7 @@ def send_contract_worker_approval_notification(contract, event):
     else:
         recipients = [employee.email] if employee.email else []
         subject = f"Congratulations! You are approved to start working at {business}"
-        destination = (f"{settings.FRONTEND_URL}/MyAccount"
+        destination = (f"{settings.FRONTEND_URL}/dashboard"
                        if settings.FRONTEND_URL else sign_in_url())
         body = (
             f"Hello {employee.first_name},\n\n"
@@ -364,7 +364,7 @@ def send_contract_termination_notification(termination, event):
     if connection is None:
         return False
     business = employee.business.name if employee.business_id else "Your employer"
-    employee_destination = (f"{settings.FRONTEND_URL}/MyAccount/contract"
+    employee_destination = (f"{settings.FRONTEND_URL}/dashboard/contract"
                             if settings.FRONTEND_URL else sign_in_url())
     employer_destination = (f"{settings.FRONTEND_URL}/dashboard/contracts"
                             if settings.FRONTEND_URL else sign_in_url())
@@ -423,7 +423,7 @@ def send_leave_notification(leave, event):
     business = employee.business.name if employee.business_id else "your employer"
     period = f"{leave.start_date} to {leave.end_date}"
     leave_name = leave.get_leave_type_display()
-    destination = f"{settings.FRONTEND_URL}/MyAccount/leave" if settings.FRONTEND_URL else sign_in_url()
+    destination = f"{settings.FRONTEND_URL}/dashboard/leave" if settings.FRONTEND_URL else sign_in_url()
 
     if event in {"approved", "rejected"}:
         recipients = [employee.email] if employee.email else []
@@ -503,7 +503,7 @@ def send_platform_message(message, recipients):
     else:
         subject = f"Message from {company}"
         opening = f"{company} sent the platform team a message:"
-        destination = f"{settings.FRONTEND_URL}/admin/messages/{message.business_id}" if settings.FRONTEND_URL else sign_in_url()
+        destination = f"{settings.FRONTEND_URL}/dashboard/messages/{message.business_id}" if settings.FRONTEND_URL else sign_in_url()
     body = (
         f"{opening}\n\n"
         f"{message.body}\n\n"

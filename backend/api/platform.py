@@ -147,6 +147,8 @@ class AdminEmployeeSerializer(serializers.Serializer):
         data = {
             "id": employee.pk, "first_name": employee.first_name, "last_name": employee.last_name,
             "email": employee.email, "job_title": employee.job_title, "is_active": employee.is_active,
+            "department": employee.department, "date_joined": employee.date_joined,
+            "employment_type": employee.employment_type,
             "business": employee.business_id, "business_name": employee.business.name if employee.business_id else "",
             "account_status": account_status(employee),
             "username": account.user.username if account else "",

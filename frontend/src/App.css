@@ -671,6 +671,7 @@ td small {
 .time-clock-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .time-clock-heading h3 { margin: 0; }
 .clock-times { padding: 18px 0; border-top: 1px solid #e4ded4; border-bottom: 1px solid #e4ded4; }
+.clock-times .location-badge { margin-left: 8px; }
 .time-clock-card .button { margin-top: 18px; }
 .shift-tabs { display: flex; gap: 10px; margin: 18px 0; }
 .shift-tabs button { padding: 10px 18px; border: 1px solid var(--burgundy); border-radius: 8px; background: transparent; color: var(--burgundy); font-weight: 800; cursor: pointer; }

@@ -16,7 +16,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import leave_management, onboarding, payroll_rules
+from . import contract_pay, leave_management, onboarding, payroll_rules
 from .models import (AccountProfile, Employee, Contract, ContractTerminationRequest,
                      Attendance, LeaveBalance, LeaveRequest, Holiday, Announcement,
                      CalendarEvent, Salary, Payroll)
@@ -321,6 +321,8 @@ class ContractViewSet(ManagerViewSet):
                 raise serializers.ValidationError("Only a draft contract can be sent for signature.")
             if not contract.content.strip():
                 raise serializers.ValidationError({"content": "Write the digital contract before sending it."})
+            if contract.monthly_salary is None:
+                raise serializers.ValidationError({"monthly_salary": "Enter the monthly salary before sending the contract."})
             if not AccountProfile.objects.filter(employee=contract.employee, role="employee").exists():
                 raise serializers.ValidationError("This employee does not have a linked sign-in account.")
             contract.signature_status = "sent"
@@ -380,6 +382,8 @@ class ContractViewSet(ManagerViewSet):
                 start_date=original.start_date,
                 end_date=original.end_date,
                 status=original.status,
+                monthly_salary=original.monthly_salary,
+                salary_currency=original.salary_currency,
                 terms=original.terms,
                 content=original.content,
                 document=original.document.name if original.document else "",
@@ -413,6 +417,7 @@ class ContractViewSet(ManagerViewSet):
             contract.worker_approved_at = timezone.now()
             contract.worker_approved_by = request.user.get_full_name().strip() or request.user.username
             contract.save(update_fields=["worker_approval_status", "worker_approved_at", "worker_approved_by"])
+            contract_pay.sync_salary(contract)
         emailed = onboarding.send_contract_worker_approval_notification(contract, "approved")
         data = self.get_serializer(contract).data
         data["notification"] = {
@@ -924,8 +929,10 @@ PAYMENT_BREAKDOWN_FIELDS = {
                     "this salary as the base pay. Both fields are optional: `month` defaults to "
                     "the current month and `paid_date` to today. The deductions shown by "
                     "**payment_preview** are applied automatically and their balances updated. "
-                    "Rejected if payroll already covers any part of that month, or if the "
-                    "employee is inactive.",
+                    "The amount is the monthly salary in the signed and approved contract covering "
+                    "that month, and the payroll record is linked to it. Rejected if no such "
+                    "contract covers the month, if payroll already covers any part of it, or if "
+                    "the employee is inactive.",
         request=inline_serializer(
             name="SalaryMarkPaidRequest",
             fields={
@@ -945,12 +952,16 @@ PAYMENT_BREAKDOWN_FIELDS = {
                     "salary advance installments and authorized recoveries for resolved asset "
                     "incidents, together capped by the business's deduction limit. Nothing is "
                     "saved. For a month a payroll record already covers, the saved breakdown of "
-                    "that record is returned unchanged.",
+                    "that record is returned unchanged. An unpaid month with no signed and "
+                    "approved contract covering it is rejected.",
         parameters=[OpenApiParameter("month", str, description="The month as YYYY-MM. Defaults to this month.")],
         responses=with_errors({200: inline_serializer(name="SalaryPaymentPreview", fields={
             "employee": serializers.IntegerField(), "employee_name": serializers.CharField(),
             "month": serializers.CharField(), "currency": serializers.CharField(),
             **PAYMENT_BREAKDOWN_FIELDS,
+            "contract": inline_serializer(name="SalaryPaymentContract", allow_null=True, fields={
+                "id": serializers.IntegerField(), "title": serializers.CharField(),
+                "start_date": serializers.DateField(), "end_date": serializers.DateField(allow_null=True)}),
             "limit_percent": serializers.DecimalField(max_digits=5, decimal_places=2),
             "warnings": serializers.ListField(child=serializers.CharField()),
             "already_paid": serializers.BooleanField(),
@@ -972,6 +983,10 @@ PAYMENT_BREAKDOWN_FIELDS = {
 class SalaryViewSet(ManagerViewSet):
     queryset = Salary.objects.select_related("employee").order_by("employee__last_name", "id")
     serializer_class = SalarySerializer
+
+    def perform_destroy(self, instance):
+        SalarySerializer.reject_contract_salary(instance.employee)
+        super().perform_destroy(instance)
 
     @staticmethod
     def pay_period(month):
@@ -1001,6 +1016,13 @@ class SalaryViewSet(ManagerViewSet):
             "total_deductions": str(payroll.deductions), "net_salary": str(payroll.net_pay), "lines": lines,
         }
 
+    @staticmethod
+    def contract_summary(contract):
+        if contract is None:
+            return None
+        return {"id": contract.pk, "title": contract.title, "start_date": contract.start_date,
+                "end_date": contract.end_date}
+
     @action(detail=True, methods=["get"])
     def payment_preview(self, request, pk=None):
         salary = self.get_object()
@@ -1014,13 +1036,17 @@ class SalaryViewSet(ManagerViewSet):
                     .select_related("calculation").prefetch_related("calculation__lines").order_by("period_start").first())
         if existing is not None:
             return Response({**body, "currency": existing.currency, **self.saved_payment(existing),
+                             "contract": self.contract_summary(existing.contract),
                              "warnings": [], "already_paid": existing.status == "paid"})
+        contract = contract_pay.require_contract(salary.employee, period_start, period_end, month[:7])
+        amount, currency = contract_pay.contract_pay(contract, salary.employee)
         payroll = Payroll(employee=salary.employee, period_start=date.fromisoformat(period_start),
-                          period_end=date.fromisoformat(period_end), base_salary=salary.monthly_amount,
-                          allowances=Decimal("0"), deductions=Decimal("0"), currency=salary.currency)
+                          period_end=date.fromisoformat(period_end), base_salary=amount,
+                          allowances=Decimal("0"), deductions=Decimal("0"), currency=currency)
         result = payroll_rules.calculate_payroll(payroll, Decimal("0"))
         return Response({
-            **body, "currency": salary.currency, "status": "unpaid", "payroll": None, "paid_date": None,
+            **body, "currency": currency, "status": "unpaid", "payroll": None, "paid_date": None,
+            "contract": self.contract_summary(contract),
             "monthly_salary": str(result["gross_pay"]), "asset_deductions": str(result["asset_deductions"]),
             "advance_deductions": str(result["advance_deductions"]), "other_deductions": "0.00",
             "total_deductions": str(result["total_deductions"]), "net_salary": str(result["net_pay"]),
@@ -1066,12 +1092,15 @@ class SalaryViewSet(ManagerViewSet):
         paid_date = request.data.get("paid_date") or timezone.localdate()
         month = request.data.get("month") or str(timezone.localdate())[:7]
         period_start, period_end = self.pay_period(month)
+        contract = contract_pay.require_contract(salary.employee, period_start, period_end, month[:7])
+        amount, currency = contract_pay.contract_pay(contract, salary.employee)
         data = {
             "employee": salary.employee_id,
             "period_start": period_start, "period_end": period_end,
-            "base_salary": salary.monthly_amount, "allowances": "0", "deductions": "0",
-            "currency": salary.currency, "status": "paid", "paid_date": paid_date,
-            "notes": f"Recorded from the salaries page using the monthly salary effective {salary.effective_date}.",
+            "base_salary": amount, "allowances": "0", "deductions": "0",
+            "currency": currency, "status": "paid", "paid_date": paid_date,
+            "notes": (f"Paid under the contract “{contract.title}”." if contract.monthly_salary is not None else
+                      f"Paid under the contract “{contract.title}” using the monthly salary effective {salary.effective_date}."),
         }
         context = self.get_serializer_context()
         with transaction.atomic():

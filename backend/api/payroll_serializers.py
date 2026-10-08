@@ -113,6 +113,12 @@ class SalaryAdvanceSerializer(ManagerRecordSerializer):
     outstanding_balance = serializers.SerializerMethodField()
     next_installment = serializers.SerializerMethodField()
     schedule = serializers.SerializerMethodField()
+    from_request = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.BooleanField(help_text=(
+        "Approved from the employee's own request. Such an advance is locked.")))
+    def get_from_request(self, obj):
+        return hasattr(obj, "request")
 
     def figures(self, obj):
         cache = self.context.setdefault("_advance_figures", {})
@@ -159,6 +165,9 @@ class SalaryAdvanceSerializer(ManagerRecordSerializer):
 
     def validate(self, attrs):
         instance = self.instance
+        if instance is not None and hasattr(instance, "request"):
+            raise serializers.ValidationError(
+                "This advance was approved from the employee's request and can no longer be changed.")
         if instance is not None:
             figures = payroll_rules.advance_figures(instance)
             if figures["status"] == "repaid":
@@ -202,7 +211,7 @@ class SalaryAdvanceSerializer(ManagerRecordSerializer):
                   "installment_amount", "first_repayment_month", "notes", "disbursed_on",
                   "disbursement_method", "disbursement_reference", "approved_by", "created_at", "status",
                   "total_repaid", "scheduled_deductions", "outstanding_balance", "next_installment",
-                  "schedule", "repayments"]
+                  "schedule", "repayments", "from_request"]
         read_only_fields = ["disbursed_on", "disbursement_method", "disbursement_reference", "approved_by",
                             "created_at"]
         extra_kwargs = {"installment_amount": {"required": False}, "first_repayment_month": {"required": False},
@@ -231,15 +240,17 @@ class MyAdvanceRequestSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SalaryAdvanceRequest
-        fields = ["id", "amount", "currency", "reason", "status", "decision_notes", "decided_at", "advance",
-                  "requested_at"]
-        read_only_fields = ["currency", "status", "decision_notes", "decided_at", "advance", "requested_at"]
+        fields = ["id", "amount", "currency", "reason", "status", "decision_notes", "decided_by", "decided_at",
+                  "advance", "requested_at"]
+        read_only_fields = ["currency", "status", "decision_notes", "decided_by", "decided_at", "advance",
+                            "requested_at"]
         extra_kwargs = {"reason": {"required": False, "allow_blank": True}}
 
 
 class MyPayslipSerializer(serializers.ModelSerializer):
     gross_pay = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     net_pay = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    contract_title = serializers.CharField(source="contract.title", read_only=True, default=None)
     lines = serializers.SerializerMethodField()
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
@@ -252,8 +263,8 @@ class MyPayslipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payroll
         fields = ["id", "period_start", "period_end", "employee_name", "employee_email", "job_title", "department",
-                  "base_salary", "allowances", "gross_pay", "deductions", "net_pay", "currency", "status",
-                  "paid_date", "lines"]
+                  "contract_title", "base_salary", "allowances", "gross_pay", "deductions", "net_pay", "currency",
+                  "status", "paid_date", "lines"]
         read_only_fields = fields
 
 

@@ -142,6 +142,10 @@ class Contract(models.Model):
         ("draft", "Draft"), ("active", "Active"), ("ended", "Ended"),
         ("terminated_mutual", "Terminated by Mutual Agreement")])
     terms = models.TextField(blank=True)
+    # The pay this contract agrees to. Older contracts predate it and fall back
+    # to the employee's Salary record.
+    monthly_salary = money_field(null=True, blank=True)
+    salary_currency = models.CharField(max_length=3, default="RWF")
     content = models.TextField(blank=True)
     document = models.FileField(upload_to=contract_path, blank=True,
         validators=[FileExtensionValidator(["pdf", "doc", "docx"])])
@@ -179,6 +183,14 @@ class ContractTerminationRequest(models.Model):
     responded_at = models.DateTimeField(null=True, blank=True)
 
 
+LOCATION_STATUSES = [("inside", "Inside office area"), ("outside", "Outside allowed area"),
+                     ("unavailable", "Location unavailable")]
+
+
+def coordinate_field():
+    return models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+
+
 class Attendance(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="attendance")
     date = models.DateField()
@@ -191,9 +203,33 @@ class Attendance(models.Model):
     check_in_at = models.DateTimeField(null=True, blank=True)
     check_out_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True)
+    # Where the employee clocked in and out, checked against the workplace on
+    # the server. A blank status means no check was made (no workplace saved,
+    # or the record predates location checks).
+    check_in_location_status = models.CharField(max_length=12, blank=True, choices=LOCATION_STATUSES)
+    check_in_latitude = coordinate_field()
+    check_in_longitude = coordinate_field()
+    check_in_distance_m = models.PositiveIntegerField(null=True, blank=True)
+    check_in_accuracy_m = models.PositiveIntegerField(null=True, blank=True)
+    check_out_location_status = models.CharField(max_length=12, blank=True, choices=LOCATION_STATUSES)
+    check_out_latitude = coordinate_field()
+    check_out_longitude = coordinate_field()
+    check_out_distance_m = models.PositiveIntegerField(null=True, blank=True)
+    check_out_accuracy_m = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["employee", "date", "shift"], name="unique_employee_attendance_shift")]
+
+
+class WorkplaceLocation(models.Model):
+    """The office an employer saved; attendance within `radius_m` counts as inside."""
+
+    business = models.OneToOneField(Business, on_delete=models.CASCADE, related_name="workplace_location")
+    latitude = models.DecimalField(max_digits=9, decimal_places=6)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    radius_m = models.PositiveIntegerField(default=100, validators=[MinValueValidator(10), MaxValueValidator(5000)])
+    updated_by = models.CharField(max_length=200, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
 
 class LeaveRequest(models.Model):
@@ -301,6 +337,7 @@ class Salary(models.Model):
 
 class Payroll(models.Model):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="payroll")
+    contract = models.ForeignKey(Contract, on_delete=models.PROTECT, null=True, blank=True, related_name="payroll")
     period_start = models.DateField()
     period_end = models.DateField()
     base_salary = money_field()

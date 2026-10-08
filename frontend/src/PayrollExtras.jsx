@@ -3,7 +3,7 @@ import ModalDialog from "./components/ModalDialog";
 import { useConfirm } from "./components/ConfirmDialog";
 import { addAdvanceRepayment, decideSalaryAdvanceRequest, deleteRecord, downloadEvidence, fetchAssetSummary,
   fetchRecords, saveRecord } from "./api";
-import { label, money, today } from "./managerConfig";
+import { decisionText, label, money, today } from "./managerConfig";
 
 const CURRENCIES = ["RWF", "ZAR", "USD", "EUR", "GBP", "BWP", "NAD", "LSL", "SZL", "KES", "NGN"];
 const METHODS = [["bank_transfer", "Bank transfer"], ["mobile_money", "Mobile money"], ["cash", "Cash"]];
@@ -335,6 +335,7 @@ export function SalaryAdvancesPage({ token, employees, onAuthError, onRequestsCh
   const requests = useRecords(token, "salary-advance-requests", onAuthError);
   const [rejecting, setRejecting] = useState(null);
   const pendingRequests = requests.rows.filter((row) => row.status === "pending");
+  const decidedRequests = requests.rows.filter((row) => row.status !== "pending");
   const pendingCount = pendingRequests.length;
   useEffect(() => { if (!requests.loading) onRequestsChange?.(pendingCount); }, [requests.loading, pendingCount, onRequestsChange]);
   const [search, setSearch] = useState("");
@@ -456,6 +457,15 @@ export function SalaryAdvancesPage({ token, employees, onAuthError, onRequestsCh
         { title: "Status", render: (row) => <StatusBadge value={row.status} /> },
       ]} actions={(row) => <button type="button" onClick={() => setViewingId(row.id)}>Details</button>} />
     </section>}
+    {decidedRequests.length > 0 && <details className="panel records-panel decided-requests"><summary>Decided requests from employees ({decidedRequests.length})</summary>
+      <Table rows={decidedRequests} empty="No decided requests." columns={[
+        { title: "Employee", render: (row) => row.employee_name },
+        { title: "Requested", render: (row) => dateTime(row.requested_at) },
+        { title: "Amount", render: (row) => money(row.amount, row.currency) },
+        { title: "Decision", render: (row) => decisionText(row.status, row.decided_by, row.decided_at) },
+        { title: "Notes", render: (row) => row.decision_notes || "—" },
+      ]} />
+    </details>}
 
     {viewing && <ModalDialog title="Salary advance" wide onClose={() => setViewingId(null)}><section className="account-panel leave-preview payroll-detail">
       <h3>{viewing.employee_name} <StatusBadge value={viewing.status} /></h3>
@@ -484,9 +494,10 @@ export function SalaryAdvancesPage({ token, employees, onAuthError, onRequestsCh
       ]} />
       <div className="form-actions">
         {["disbursed", "partially_repaid"].includes(viewing.status) && <button type="button" className="button button-outline" disabled={busy} onClick={() => openAction("repay", viewing)}>Record direct repayment</button>}
-        {viewing.status !== "repaid" && <button type="button" className="button button-outline" onClick={() => { const row = viewing; setViewingId(null); openForm(row); }}>Edit</button>}
-        {viewing.repayments.length === 0 && <button type="button" className="danger-link" disabled={busy} onClick={() => remove(viewing)}>Delete</button>}
+        {viewing.status !== "repaid" && !viewing.from_request && <button type="button" className="button button-outline" onClick={() => { const row = viewing; setViewingId(null); openForm(row); }}>Edit</button>}
+        {viewing.repayments.length === 0 && !viewing.from_request && <button type="button" className="danger-link" disabled={busy} onClick={() => remove(viewing)}>Delete</button>}
       </div>
+      {viewing.from_request && <p className="muted">Approved from the employee's request, so it can no longer be edited or deleted.</p>}
     </section></ModalDialog>}
 
     {form && action && <ModalDialog title={action === "repay" ? "Record direct repayment" : form.id ? "Edit advance" : "Issue salary advance"} wide={action === "edit"} onClose={() => { setForm(null); setAction(null); }}>

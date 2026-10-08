@@ -166,6 +166,9 @@ class AdminEmployeeResponseSerializer(serializers.Serializer):
     email = serializers.EmailField()
     job_title = serializers.CharField()
     is_active = serializers.BooleanField()
+    department = serializers.CharField(allow_blank=True)
+    date_joined = serializers.DateField()
+    employment_type = serializers.CharField()
     business = serializers.IntegerField()
     business_name = serializers.CharField(allow_blank=True)
     account_status = serializers.ChoiceField(
@@ -198,6 +201,10 @@ class MyAttendanceStateSerializer(serializers.Serializer):
         child=serializers.DictField(), help_text="Every shift recorded on `date`.")
     total_hours = serializers.CharField(
         help_text="Hours across all shifts on `date`, as a 2-decimal string.")
+    workplace_configured = serializers.BooleanField(
+        help_text="Whether the employer saved a workplace location; send coordinates when true.")
+    workplace_radius_m = serializers.IntegerField(
+        allow_null=True, help_text="Allowed distance from the workplace in metres.")
 
 
 class MyLeaveOverviewSerializer(serializers.Serializer):

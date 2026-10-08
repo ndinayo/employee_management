@@ -4,11 +4,13 @@ import { DigitalContractDocument, SignaturePad } from "./DigitalContract";
 import CompanyCalendar, { EmployeeAnnouncements } from "./CompanyCalendar";
 import EmployeePayroll from "./EmployeePayroll";
 import ModalDialog from "./components/ModalDialog";
-import PasswordInput from "./components/PasswordInput";
+import ChangePasswordDialog from "./components/ChangePasswordDialog";
 import DashboardTopNav from "./components/DashboardTopNav";
 import { useConfirm } from "./components/ConfirmDialog";
-import { acknowledgeMyContractTermination, cancelMyLeave, changePassword, clockMyAttendance, fetchAccount, fetchMyAnnouncements, fetchMyAttendance, fetchMyCalendar, fetchMyContracts, fetchMyLeave, fetchMyPhoto, fetchMyProfile, markAllMyAnnouncementsRead, markAllMyCalendarRead, markMyAnnouncementRead, markMyCalendarEventRead, requestMyContractTermination, saveMyProfile, signMyContract, submitMyLeave, updateMyLeave } from "./api";
-import { label, longDate, today } from "./managerConfig";
+import LocationStatus from "./components/LocationStatus";
+import { locationText, positionOrNull } from "./geolocation";
+import { acknowledgeMyContractTermination, cancelMyLeave, clockMyAttendance, fetchAccount, fetchMyAnnouncements, fetchMyAttendance, fetchMyCalendar, fetchMyContracts, fetchMyLeave, fetchMyPhoto, fetchMyProfile, markAllMyAnnouncementsRead, markAllMyCalendarRead, markMyAnnouncementRead, markMyCalendarEventRead, requestMyContractTermination, saveMyProfile, signMyContract, submitMyLeave, updateMyLeave } from "./api";
+import { decisionText, label, longDate, money, today } from "./managerConfig";
 
 // The employer supplies only name, job title and email. Everything here is the
 // employee's own to complete.
@@ -20,66 +22,16 @@ const EDITABLE = [
 ];
 
 export function PasswordCard({ token, forced, onChanged }) {
-  const [fields, setFields] = useState({ current_password: "", new_password: "", new_password_confirm: "" });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const [done, setDone] = useState(false);
   const [open, setOpen] = useState(forced);
-
-  function update(event) {
-    const { name, value } = event.target;
-    setFields((current) => ({ ...current, [name]: value }));
+  function changed(access, user, refresh) {
+    setDone(true);
+    if (!forced) setOpen(false);
+    onChanged(access, user, refresh);
   }
-
-  async function submit(event) {
-    event.preventDefault();
-    if (busy) return;
-    setError("");
-    if (fields.new_password !== fields.new_password_confirm) {
-      setError("Passwords do not match.");
-      return;
-    }
-    setBusy(true);
-    try {
-      const result = await changePassword(token, fields);
-      setFields({ current_password: "", new_password: "", new_password_confirm: "" });
-      setDone(true);
-      if (!forced) setOpen(false);
-      // The workspace replaces the password form, so start reading from the top.
-      if (forced) window.scrollTo({ top: 0 });
-      onChanged(result.access, result.user, result.refresh);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const passwordForm = <form className="account-panel" onSubmit={submit} aria-busy={busy}>
-    <h3>{forced ? "Choose your own password" : "Change your password"}</h3>
-    {forced && <p>You signed in with the temporary password from your invitation email. Set a password of your own to continue.</p>}
-    {error && <p className="message error" role="alert">{error}</p>}
-    {done && !forced && <p className="message success" role="status">Your password has been changed.</p>}
-    <fieldset className="auth-fields" disabled={busy}>
-      <label htmlFor="current-password">{forced ? "Temporary password" : "Current password"}</label>
-      <PasswordInput id="current-password" name="current_password" value={fields.current_password}
-             onChange={update} autoComplete="current-password" maxLength={128} required />
-      <label htmlFor="new-password">New password</label>
-      <PasswordInput id="new-password" name="new_password" value={fields.new_password}
-             onChange={update} autoComplete="new-password" maxLength={128} minLength={8}
-             aria-describedby="new-password-hint" required />
-      <p id="new-password-hint" className="auth-hint">Use at least 8 characters. Avoid common passwords, only numbers, or your personal details.</p>
-      <label htmlFor="new-password-confirm">Confirm new password</label>
-      <PasswordInput id="new-password-confirm" name="new_password_confirm" value={fields.new_password_confirm}
-             onChange={update} autoComplete="new-password" maxLength={128} required />
-      <button className="button button-coral" type="submit" disabled={busy}>
-        {busy ? "Saving…" : "Save password →"}
-      </button>
-    </fieldset>
-  </form>;
   return <>
-    {!forced && <section className="panel account-panel form-launch-card" id="security"><div><h3>Password</h3><p className="muted">Choose a new password whenever you need to update account security.</p>{done && <p className="message success" role="status">Your password has been changed.</p>}</div><button className="button button-outline" type="button" onClick={() => { setError(""); setOpen(true); }}>Change password</button></section>}
-    {open && <ModalDialog title={forced ? "Choose your own password" : "Change your password"} dismissible={!forced} onClose={() => setOpen(false)}>{passwordForm}</ModalDialog>}
+    {!forced && <section className="panel account-panel form-launch-card" id="security"><div><h3>Password</h3><p className="muted">Choose a new password whenever you need to update account security.</p>{done && <p className="message success" role="status">Your password has been changed.</p>}</div><button className="button button-outline" type="button" onClick={() => setOpen(true)}>Change password</button></section>}
+    {open && <ChangePasswordDialog token={token} forced={forced} onClose={() => setOpen(false)} onChanged={changed} />}
   </>;
 }
 
@@ -248,9 +200,13 @@ function TimeClockCard({ token }) {
     setError("");
     setNotice("");
     try {
-      const result = await clockMyAttendance(token, action, shift, action === "check_in" ? checkInTime : checkOutTime);
+      if (day?.workplace_configured) setBusy("locating");
+      const position = day?.workplace_configured ? await positionOrNull() : null;
+      setBusy(true);
+      const result = await clockMyAttendance(token, action, shift, action === "check_in" ? checkInTime : checkOutTime, position);
       setDay(result);
-      setNotice(action === "check_in" ? `${label(shift)} shift started.` : `${label(shift)} shift completed.`);
+      const where = locationText(result.attendance, action);
+      setNotice(`${label(shift)} shift ${action === "check_in" ? "started" : "completed"}${where ? ` · ${where}` : ""}.`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -272,14 +228,15 @@ function TimeClockCard({ token }) {
     </div>
     {error && <p className="message error" role="alert">{error}</p>}
     {notice && <p className="message success" role="status">{notice}</p>}
+    {day?.workplace_configured && !checkedOut && <p className="muted">Your location is checked against the office area ({day.workplace_radius_m} m) when you check in or out.</p>}
     {attendance && <dl className="clock-times">
-      <dt>Check-in</dt><dd>{timeOf(attendance?.check_in_at)}</dd>
-      <dt>Check-out</dt><dd>{timeOf(attendance?.check_out_at)}</dd>
+      <dt>Check-in</dt><dd>{timeOf(attendance?.check_in_at)} <LocationStatus record={attendance} prefix="check_in" /></dd>
+      <dt>Check-out</dt><dd>{timeOf(attendance?.check_out_at)} <LocationStatus record={attendance} prefix="check_out" /></dd>
       <dt>Hours worked</dt><dd>{checkedOut ? attendance.hours_worked : runningTime(attendance.check_in_at, now)}</dd>
     </dl>}
     {checkedIn && !checkedOut && <div className="live-shift-timer" aria-live="off"><span>Time in office</span><strong>{runningTime(attendance.check_in_at, now)}</strong><small>Counting live</small></div>}
-    {day && !checkedIn && <div className="shift-clock-action"><label htmlFor={`${shift}-check-in-time`}>Check-in time</label><input id={`${shift}-check-in-time`} type="time" value={checkInTime} onChange={(event) => setCheckInTime(event.target.value)} /><button className="button button-coral" disabled={busy || !checkInTime} type="button" onClick={() => clock("check_in")}>{busy ? "Checking in…" : "Check in"}</button></div>}
-    {day && checkedIn && !checkedOut && <div className="shift-clock-action"><label htmlFor={`${shift}-check-out-time`}>Check-out time</label><input id={`${shift}-check-out-time`} type="time" value={checkOutTime} onChange={(event) => setCheckOutTime(event.target.value)} /><button className="button button-coral" disabled={busy || !checkOutTime} type="button" onClick={() => clock("check_out")}>{busy ? "Checking out…" : "Check out"}</button></div>}
+    {day && !checkedIn && <div className="shift-clock-action"><label htmlFor={`${shift}-check-in-time`}>Check-in time</label><input id={`${shift}-check-in-time`} type="time" value={checkInTime} onChange={(event) => setCheckInTime(event.target.value)} /><button className="button button-coral" disabled={busy || !checkInTime} type="button" onClick={() => clock("check_in")}>{busy === "locating" ? "Checking location…" : busy ? "Checking in…" : "Check in"}</button></div>}
+    {day && checkedIn && !checkedOut && <div className="shift-clock-action"><label htmlFor={`${shift}-check-out-time`}>Check-out time</label><input id={`${shift}-check-out-time`} type="time" value={checkOutTime} onChange={(event) => setCheckOutTime(event.target.value)} /><button className="button button-coral" disabled={busy || !checkOutTime} type="button" onClick={() => clock("check_out")}>{busy === "locating" ? "Checking location…" : busy ? "Checking out…" : "Check out"}</button></div>}
     {day && <div className="shift-day-summary"><strong>Total hours today: {day.total_hours || "0.00"}</strong>{shifts.length > 0 && <div>{shifts.map((item) => <span key={item.id}>{label(item.shift)}: {item.check_out_at ? `${item.hours_worked} hours` : "In progress"}</span>)}</div>}</div>}
   </section>;
 }
@@ -354,7 +311,7 @@ function LeaveManagementCard({ token }) {
   }
 
   const requestRows = (rows) => rows.length ? <div className="leave-history-list">{rows.map((item) => <div className="leave-history-row" key={item.id}>
-    <div><strong>{label(item.leave_type)}</strong><span>{item.start_date} to {item.end_date} · {item.days_requested} working day{Number(item.days_requested) === 1 ? "" : "s"}</span>{item.decision_notes && <small>{item.decision_notes}</small>}</div>
+    <div><strong>{label(item.leave_type)}</strong><span>{item.start_date} to {item.end_date} · {item.days_requested} working day{Number(item.days_requested) === 1 ? "" : "s"}</span>{item.status !== "pending" && decisionText(item.status, item.decided_by, item.decided_at) && <small>{decisionText(item.status, item.decided_by, item.decided_at)}</small>}{item.decision_notes && <small>{item.decision_notes}</small>}</div>
     <div><span className={`status-badge status-${item.status}`}>{label(item.status)}</span><button className="text-button" type="button" onClick={() => setPreviewing(item)}>Preview</button>{item.status === "pending" && <><button className="text-button" disabled={busy} type="button" onClick={() => edit(item)}>Edit</button><button className="text-button danger-link" disabled={busy} type="button" onClick={() => cancel(item)}>Cancel</button></>}</div>
   </div>)}</div> : <p className="empty-state">No leave requests in this section.</p>;
 
@@ -373,7 +330,7 @@ function LeaveManagementCard({ token }) {
     </form></ModalDialog>}
     {previewing && <ModalDialog title="Leave request" onClose={() => setPreviewing(null)}><section className="account-panel leave-preview">
       <h3>{label(previewing.leave_type)} leave</h3>
-      <dl><dt>Start date</dt><dd>{previewing.start_date}</dd><dt>End date</dt><dd>{previewing.end_date}</dd><dt>Working days</dt><dd>{previewing.days_requested}</dd><dt>Status</dt><dd>{label(previewing.status)}</dd><dt>Reason</dt><dd>{previewing.reason || "No reason provided"}</dd>{previewing.decision_notes && <><dt>Employer notes</dt><dd>{previewing.decision_notes}</dd></>}</dl>
+      <dl><dt>Start date</dt><dd>{previewing.start_date}</dd><dt>End date</dt><dd>{previewing.end_date}</dd><dt>Working days</dt><dd>{previewing.days_requested}</dd><dt>Status</dt><dd>{label(previewing.status)}</dd>{previewing.status !== "pending" && previewing.decided_at && <><dt>Decision</dt><dd>{decisionText(previewing.status, previewing.decided_by, previewing.decided_at)}</dd></>}<dt>Reason</dt><dd>{previewing.reason || "No reason provided"}</dd>{previewing.decision_notes && <><dt>Employer notes</dt><dd>{previewing.decision_notes}</dd></>}</dl>
       {previewing.status === "pending" && <button className="button button-coral" type="button" onClick={() => edit(previewing)}>Edit request</button>}
     </section></ModalDialog>}
     {confirmation}
@@ -496,8 +453,10 @@ function ContractsCard({ token, profile, onSigned, onAttentionChange }) {
         <span className={`status-badge ${contract.status === "terminated_mutual" ? "status-ended" : contract.signature_status === "sent" || contract.worker_approval_status !== "approved" ? "status-pending" : "status-approved"}`}>{contract.status === "terminated_mutual" ? "Terminated by Mutual Agreement" : contract.signature_status === "sent" ? "Awaiting your signature" : contract.worker_approval_status === "approved" ? "Approved to start work" : "Waiting for employer approval"}</span>
       </div>
       {contract.employer_message && <div className="message"><strong>Message from your employer</strong><p>{contract.employer_message}</p></div>}
+      {(contract.signed_at || contract.worker_approved_at) && <p className="muted contract-approvals">{contract.signed_at && `Signed by ${contract.signer_name || "you"} on ${new Date(contract.signed_at).toLocaleString()}`}{contract.signed_at && contract.worker_approved_at && " · "}{contract.worker_approved_at && decisionText("approved", contract.worker_approved_by, contract.worker_approved_at)}</p>}
+      {contract.monthly_salary && <p className="muted">Monthly salary: <strong>{money(contract.monthly_salary, contract.salary_currency)}</strong></p>}
       {contract.signature_status === "signed" && contract.worker_approval_status !== "approved" && <div className="message"><strong>Waiting for employer approval</strong><p>Your contract is signed. Your employer has been emailed and must approve you as a worker before the rest of the workspace opens.</p></div>}
-      {contract.termination && <div className="message contract-termination-summary"><strong>{contract.termination.initiated_by === "employee" ? "Your termination request" : "Termination initiated by employer"}</strong><p>Proposed last working date: {contract.termination.proposed_last_working_date}</p><p>Reason: {contract.termination.reason}</p><p>Status: {label(contract.termination.status)}</p>{contract.termination.response_notes && <p>Response: {contract.termination.response_notes}</p>}</div>}
+      {contract.termination && <div className="message contract-termination-summary"><strong>{contract.termination.initiated_by === "employee" ? "Your termination request" : "Termination initiated by employer"}</strong><p>Proposed last working date: {contract.termination.proposed_last_working_date}</p><p>Reason: {contract.termination.reason}</p><p>Status: {label(contract.termination.status)}{contract.termination.responded_at && ` on ${new Date(contract.termination.responded_at).toLocaleString()}`}</p>{contract.termination.response_notes && <p>Response: {contract.termination.response_notes}</p>}</div>}
       <details open={contract.signature_status === "sent"}>
         <summary>Read contract</summary>
         <DigitalContractDocument contract={contract} />
@@ -544,10 +503,10 @@ function employeeViewFromLocation(location) {
   return "overview";
 }
 
-function EmployeeTopNav({ account, onLogout, linked, forced, contractOnly = false, contractAttention = 0, announcementAttention = 0, calendarAttention = 0, view }) {
+function EmployeeTopNav({ account, token, onLogout, linked, forced, contractOnly = false, contractAttention = 0, announcementAttention = 0, calendarAttention = 0, view }) {
   const link = (key, label, count = 0) => ({
     label,
-    to: key === "overview" ? "/MyAccount" : `/MyAccount/${key}`,
+    to: key === "overview" ? "/dashboard" : `/dashboard/${key}`,
     selected: view === key,
     badge: count,
     badgeLabel: `${count} items need attention`,
@@ -565,11 +524,14 @@ function EmployeeTopNav({ account, onLogout, linked, forced, contractOnly = fals
       link("calendar", "Calendar", calendarAttention),
     ] : []),
   ];
+  const full = linked && !forced && !contractOnly;
   return <DashboardTopNav
     items={items}
-    identity={{ eyebrow: account.business_name || "EMPLOYEE WORKSPACE", name: account.display_name || account.username || "Employee", role: account.role_label || "Employee" }}
+    identity={{ eyebrow: account.business_name || "EMPLOYEE WORKSPACE", name: account.display_name || account.username || "Employee", role: account.role_label || "Employee", detail: account.email }}
     navLabel="Employee navigation"
     onLogout={onLogout}
+    token={forced ? undefined : token}
+    profileTo={full ? "/dashboard/profile" : undefined}
   />;
 }
 
@@ -592,7 +554,7 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
     try {
       const day = await fetchMyAttendance(token);
       const active = (day.shifts || []).find((item) => item.check_in_at && !item.check_out_at);
-      if (active) { setSignOutPrompt({ attendance: active, busy: false, error: "" }); return; }
+      if (active) { setSignOutPrompt({ attendance: active, locate: day.workplace_configured, busy: false, error: "" }); return; }
     } catch {
       // Attendance is unavailable; signing out still goes ahead.
     }
@@ -602,7 +564,8 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
   async function checkOutAndSignOut() {
     setSignOutPrompt((current) => ({ ...current, busy: true, error: "" }));
     try {
-      await clockMyAttendance(token, "check_out", signOutPrompt.attendance.shift, currentClockTime());
+      const position = signOutPrompt.locate ? await positionOrNull() : null;
+      await clockMyAttendance(token, "check_out", signOutPrompt.attendance.shift, currentClockTime(), position);
       onLogout();
     } catch (err) {
       setSignOutPrompt((current) => current && { ...current, busy: false, error: err.message });
@@ -647,13 +610,13 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
   useEffect(() => {
     const legacy = location.hash.slice(1).toLowerCase();
     const legacyView = legacy === "contracts" ? "contract" : legacy;
-    if (location.pathname.toLowerCase().replace(/\/$/, "") === "/myaccount" && ["profile", "attendance", "leave", "contract", "announcements", "calendar"].includes(legacyView)) {
-      navigate(`/MyAccount/${legacyView}${location.search}`, { replace: true });
+    if (location.pathname.toLowerCase().replace(/\/$/, "") === "/dashboard" && ["profile", "attendance", "leave", "contract", "announcements", "calendar"].includes(legacyView)) {
+      navigate(`/dashboard/${legacyView}${location.search}`, { replace: true });
     }
   }, [location.hash, location.pathname, location.search, navigate]);
   useEffect(() => {
-    if (contractLocked && location.pathname.toLowerCase() !== "/myaccount/contract") {
-      navigate(`/MyAccount/contract${location.search}`, { replace: true });
+    if (contractLocked && location.pathname.toLowerCase() !== "/dashboard/contract") {
+      navigate(`/dashboard/contract${location.search}`, { replace: true });
     }
   }, [contractLocked, location.pathname, location.search, navigate]);
   useEffect(() => {
@@ -685,7 +648,7 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
 
 
   if (contractLocked) {
-    return <><EmployeeTopNav account={account} onLogout={onLogout} linked contractOnly contractAttention={contractAttention} view="contract" />
+    return <><EmployeeTopNav account={account} token={token} onLogout={onLogout} linked contractOnly contractAttention={contractAttention} view="contract" />
       <main className="dashboard-main employee-main topnav-main"><section className="workspace account-workspace">
         {loadError && <p className="message error" role="alert">{loadError}</p>}
         <ContractsCard token={token} profile={{ first_name: account.display_name || account.username, last_name: "" }} onSigned={() => onAccountChange(token, { ...account, has_signed_contract: true })} onAttentionChange={setContractAttention} />
@@ -716,7 +679,7 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
   const unreadAnnouncements = announcements.filter((item) => !item.is_read).length;
   const unreadCalendarEvents = calendarEvents.filter((item) => !item.is_read).length;
 
-  return <><EmployeeTopNav account={account} onLogout={requestSignOut} linked={account.has_employee_record} forced={false} contractAttention={contractAttention} announcementAttention={unreadAnnouncements} calendarAttention={unreadCalendarEvents} view={view} />
+  return <><EmployeeTopNav account={account} token={token} onLogout={requestSignOut} linked={account.has_employee_record} forced={false} contractAttention={contractAttention} announcementAttention={unreadAnnouncements} calendarAttention={unreadCalendarEvents} view={view} />
     <main className="dashboard-main employee-main topnav-main"><section className="workspace account-workspace">
     {view === "overview" && <><div className="section-heading" id="overview">
       <div>

@@ -641,6 +641,10 @@ class EmployeePayrollTests(PayrollFeatureTestCase):
                          (Decimal("50000.00"), Decimal("50000.00"), timezone.localdate(), "Rent"))
         self.assertEqual(self.client.post(f"/api/salary-advance-requests/{created.data['id']}/approve/", {},
                                           format="json").status_code, 400)
+        self.assertTrue(self.client.get(f"/api/salary-advances/{advance.pk}/").data["from_request"])
+        self.assertEqual(self.client.patch(f"/api/salary-advances/{advance.pk}/", {"amount": "1000"},
+                                           format="json").status_code, 400)
+        self.assertEqual(self.client.delete(f"/api/salary-advances/{advance.pk}/").status_code, 400)
         month = str(timezone.localdate())[:7]
         preview = self.client.get(f"/api/salaries/{self.salary.pk}/payment_preview/", {"month": month}).data
         self.assertEqual(Decimal(preview["advance_deductions"]), Decimal("50000"))
@@ -648,6 +652,8 @@ class EmployeePayrollTests(PayrollFeatureTestCase):
         self.as_worker()
         data = self.client.get("/api/me/payroll/").data
         self.assertEqual(data["requests"][0]["status"], "approved")
+        self.assertTrue(data["requests"][0]["decided_by"])
+        self.assertIsNotNone(data["requests"][0]["decided_at"])
         self.assertEqual(Decimal(data["advances"][0]["amount"]), Decimal("50000"))
         self.assertEqual(self.client.delete(f"/api/me/salary-advance-requests/{created.data['id']}/").status_code, 400)
 

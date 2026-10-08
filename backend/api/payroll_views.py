@@ -107,10 +107,13 @@ class PayrollCalculationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin
 
 @extend_schema(tags=ADVANCES)
 class SalaryAdvanceViewSet(ManagerViewSet):
-    queryset = SalaryAdvance.objects.select_related("employee").prefetch_related("repayments__payroll__calculation")
+    queryset = SalaryAdvance.objects.select_related("employee", "request").prefetch_related("repayments__payroll__calculation")
     serializer_class = SalaryAdvanceSerializer
 
     def perform_destroy(self, instance):
+        if hasattr(instance, "request"):
+            raise serializers.ValidationError(
+                "This advance was approved from the employee's request and cannot be deleted.")
         if instance.repayments.exists():
             raise serializers.ValidationError(
                 "Advances with recorded repayments are kept as a financial record and cannot be deleted.")
