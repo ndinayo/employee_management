@@ -92,7 +92,7 @@ export const modules = {
     columns: [personColumn, { title: "Monthly salary", value: (row) => money(row.monthly_amount, row.currency) }, { title: "Effective from", value: (row) => row.effective_date }, { title: "Notes", value: (row) => row.notes }],
   },
   payroll: {
-    title: "Payroll & payslips", singular: "payroll record", description: "Prepare payroll, enter allowances and deductions, record payment, and print payslips.",
+    title: "Payroll", singular: "payroll record", description: "Prepare payroll, enter allowances and deductions, record payment, and print payslips.",
     defaults: () => {
       const date = today();
       const end = new Date(Number(date.slice(0, 4)), Number(date.slice(5, 7)), 0).getDate();

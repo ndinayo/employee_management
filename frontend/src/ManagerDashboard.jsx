@@ -4,10 +4,15 @@ import { DigitalContractDocument, RichTextEditor } from "./DigitalContract";
 import CompanyCalendar from "./CompanyCalendar";
 import GoogleMeetPage from "./GoogleMeetPage";
 import ModalDialog from "./components/ModalDialog";
+import Payslip from "./components/Payslip";
 import { useConfirm } from "./components/ConfirmDialog";
-import { Link, NavLink, Navigate, Route, Routes } from "react-router";
-import { approveContractWorker, decideContractTermination, deleteRecord, downloadContract, fetchCompanyThread, fetchEmailSettings, fetchEmployeePhoto, fetchRecords, fetchReports, initiateContractTermination, markCompanyThreadRead, markSalaryPaid, requestNewContractSignature, resendContractSignatureEmail, saveEmailSettings, saveRecord, sendCompanyMessage, sendContractForSignature } from "./api";
+import { Link, Navigate, Route, Routes } from "react-router";
+import { approveContractWorker, calculatePayroll, decideContractTermination, deleteRecord, downloadContract, fetchCompanyThread, fetchEmailSettings, fetchEmployeePhoto, fetchRecords, fetchReports, fetchSalaryPaymentHistory, fetchSalaryPaymentPreview, initiateContractTermination, markCompanyThreadRead, markSalaryPaid, requestNewContractSignature, resendContractSignatureEmail, saveEmailSettings, saveRecord, sendCompanyMessage, sendContractForSignature } from "./api";
+import { AssetMisusePage, SalaryAdvancesPage } from "./PayrollExtras";
 import Conversation from "./components/Conversation";
+import DashboardTopNav from "./components/DashboardTopNav";
+import { PasswordCard } from "./AccountPage";
+import { ACCESS_TOKEN, REFRESH_TOKEN } from "./constants";
 import { isWeekend, label, longDate, modules, money, shiftDate, today, upcomingEvents } from "./managerConfig";
 
 function saveBlob(blob, filename) {
@@ -89,37 +94,6 @@ function DataTable({ columns, rows, actions, token, empty = "No records yet.", o
       {actions && <td><div className="row-actions">{actions(row)}</div></td>}
     </tr>)}</tbody>
   </table></div>;
-}
-
-function Payslip({ record, onClose }) {
-  const dialog = useRef(null);
-  useEffect(() => {
-    const element = dialog.current;
-    element.showModal();
-    return () => element.close();
-  }, []);
-  return <dialog ref={dialog} className="payslip-dialog" onCancel={onClose} aria-labelledby="payslip-title">
-    <div className="payslip-actions no-print">
-      <button type="button" className="button button-coral" onClick={() => window.print()}>Print / save as PDF</button>
-      <button type="button" className="button button-outline" onClick={onClose}>Close</button>
-    </div>
-    <article className="payslip">
-      <p className="eyebrow dark-eyebrow">EMPLOYEE MANAGEMENT</p>
-      <h2 id="payslip-title">{record.status === "draft" ? "Draft payslip" : "Payslip"} #{String(record.id).padStart(6, "0")}</h2>
-      <p>{record.period_start} to {record.period_end}</p>
-      <div className="payslip-person"><strong>{record.employee_name}</strong><p>{record.job_title} · {record.department}</p><p>{record.employee_email}</p></div>
-      <dl className="pay-breakdown">
-        <div><dt>Base salary</dt><dd>{money(record.base_salary, record.currency)}</dd></div>
-        <div><dt>Allowances</dt><dd>{money(record.allowances, record.currency)}</dd></div>
-        <div><dt>Gross pay</dt><dd>{money(record.gross_pay, record.currency)}</dd></div>
-        <div><dt>Deductions</dt><dd>{money(record.deductions, record.currency)}</dd></div>
-        <div className="net-pay"><dt>Net pay</dt><dd>{money(record.net_pay, record.currency)}</dd></div>
-      </dl>
-      <p><strong>{label(record.status)}</strong>{record.paid_date && ` on ${record.paid_date}`}</p>
-      {record.status === "draft" && <p className="muted">Preview only. Payment has not been recorded.</p>}
-      {record.notes && <p className="preserve-lines">{record.notes}</p>}
-    </article>
-  </dialog>;
 }
 
 function DigitalContractDialog({ contract, onClose }) {
@@ -259,13 +233,67 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
   const [managedEmployeeId, setManagedEmployeeId] = useState(null);
   const [signatureMessage, setSignatureMessage] = useState("");
   const [rosterDate, setRosterDate] = useState(today);
+  const [payrollExtras, setPayrollExtras] = useState({ loaded: false, calculations: {} });
+  const [calculating, setCalculating] = useState(null);
+  const [paying, setPaying] = useState(null);
+  const [paymentHistory, setPaymentHistory] = useState(null);
+  const [payMonth, setPayMonth] = useState(() => today().slice(0, 7));
+  const [payPreviews, setPayPreviews] = useState({ month: null, rows: {} });
   const [confirm, confirmation] = useConfirm();
   const formRef = useRef(null);
+  useEffect(() => {
+    if (resource !== "payroll") return undefined;
+    let cancelled = false;
+    fetchRecords(token, "payroll-calculations").catch(() => null).then((calculations) => {
+      if (cancelled) return;
+      setPayrollExtras({
+        loaded: Boolean(calculations),
+        calculations: Object.fromEntries((calculations || []).map((row) => [row.payroll, row])),
+      });
+    });
+    return () => { cancelled = true; };
+  }, [resource, token]);
+  const currentCalculation = (row) => {
+    const calculation = payrollExtras.calculations[row.id];
+    return calculation && Number(calculation.gross_pay) === Number(row.gross_pay) && Number(calculation.total_deductions) === Number(row.deductions) ? calculation : null;
+  };
   const employees = data.employees || [];
-  const payMonth = today().slice(0, 7);
-  const paidThisMonth = new Set((data.payroll || [])
-    .filter((row) => row.status === "paid" && String(row.period_start).slice(0, 7) === payMonth)
-    .map((row) => row.employee));
+  // One row per employee with a salary in force during the chosen month.
+  const toPay = resource !== "payroll" ? [] : employees.flatMap((person) => {
+    const salary = (data.salaries || [])
+      .filter((record) => record.employee === person.id && record.effective_date <= `${payMonth}-31`)
+      .sort((a, b) => String(b.effective_date).localeCompare(String(a.effective_date)))[0];
+    if (!salary) return [];
+    const payroll = (data.payroll || []).find((row) => row.employee === person.id
+      && row.period_start <= `${payMonth}-31` && row.period_end >= `${payMonth}-01`);
+    if (!person.is_active && !payroll) return [];
+    return [{ ...salary, employee_name: `${person.first_name} ${person.last_name}`, pay_status: payroll ? label(payroll.status) : "Unpaid",
+      pay_key: `${salary.id}:${salary.monthly_amount}:${payroll ? `${payroll.id}-${payroll.status}-${payroll.deductions}` : ""}` }];
+  });
+  const toPayKey = toPay.map((row) => row.pay_key).join(",");
+  useEffect(() => {
+    if (!toPayKey) return undefined;
+    let cancelled = false;
+    const ids = toPayKey.split(",").map((key) => Number(key.split(":")[0]));
+    Promise.all(ids.map((id) => fetchSalaryPaymentPreview(token, id, payMonth).then((preview) => [id, preview], () => [id, null])))
+      .then((entries) => { if (!cancelled) setPayPreviews({ month: payMonth, rows: Object.fromEntries(entries) }); });
+    return () => { cancelled = true; };
+  }, [token, payMonth, toPayKey]);
+  const previewFor = (row) => payPreviews.month === payMonth ? payPreviews.rows[row.id] : undefined;
+  const previewMoney = (row, key) => {
+    const preview = previewFor(row);
+    return preview === undefined ? "Calculating…" : preview ? money(preview[key], preview.currency) : "Unavailable";
+  };
+  const unpaidRows = toPay.filter((row) => row.pay_status === "Unpaid");
+  const unpaidTotal = unpaidRows.every((row) => previewFor(row)) && unpaidRows.length
+    ? money(unpaidRows.reduce((sum, row) => sum + Number(previewFor(row).net_salary), 0), unpaidRows[0].currency) : null;
+  const payColumns = [
+    { title: "Employee", value: (row) => row.employee_name },
+    { title: "Monthly salary", value: (row) => money(row.monthly_amount, row.currency) },
+    { title: "Deductions", value: (row) => previewMoney(row, "total_deductions") },
+    { title: "Net salary", value: (row) => previewMoney(row, "net_salary") },
+    { title: "Status", value: (row) => row.pay_status, badge: true },
+  ];
   const roster = resource !== "attendance" ? [] : employees
     .filter((person) => person.is_active && person.date_joined <= rosterDate)
     .map((person) => {
@@ -602,17 +630,70 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
     finally { setBusy(false); }
   }
 
-  async function markPaid(row) {
-    if (!await confirm({ title: "Record salary as paid?", message: `Record ${row.employee_name}'s salary as paid for ${payMonth}? This creates a locked payroll record and payslip.`, confirmLabel: "Record payment" })) return;
+  function openCalculation(row) {
+    setError("");
+    setNotice("");
+    const previous = payrollExtras.calculations[row.id];
+    setCalculating({ row, other: previous ? previous.other_deductions : row.deductions });
+  }
+
+  async function submitCalculation(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const calculation = await calculatePayroll(token, calculating.row.id, calculating.other);
+      const updated = await fetchRecords(token, `payroll/${calculating.row.id}`);
+      onChange("payroll", updated);
+      setPayrollExtras((current) => ({ ...current, calculations: { ...current.calculations, [updated.id]: calculation } }));
+      setNotice(`Deductions calculated for ${updated.employee_name}: ${money(calculation.total_deductions, updated.currency)} in total, net pay ${money(calculation.net_pay, updated.currency)}.${calculation.warnings.length ? ` ${calculation.warnings.join(" ")}` : ""}`);
+      setCalculating(null);
+    } catch (err) { handleError(err); }
+    finally { setBusy(false); }
+  }
+
+  async function markPaid(row, month = payMonth) {
+    setError("");
+    setNotice("");
+    setPaymentHistory(null);
+    setPaying({ row, month, preview: null });
+    try {
+      const preview = await fetchSalaryPaymentPreview(token, row.id, month);
+      setPaying((current) => current?.row.id === row.id && current.month === month ? { row, month, preview } : current);
+    } catch (err) {
+      setPaying(null);
+      handleError(err);
+    }
+  }
+
+  async function confirmPaid() {
+    const { row, month } = paying;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const payroll = await markSalaryPaid(token, row.id, { month: payMonth });
+      const payroll = await markSalaryPaid(token, row.id, { month });
       onChange("payroll", payroll);
-      setNotice(`Paid ${money(payroll.net_pay, payroll.currency)} to ${payroll.employee_name} for ${payMonth}. The payslip is on the Payroll & payslips page.`);
-    } catch (err) { handleError(err); }
+      setPaying(null);
+      setNotice(`Paid ${money(payroll.net_pay, payroll.currency)} to ${payroll.employee_name} for ${month}${Number(payroll.deductions) > 0 ? ` after ${money(payroll.deductions, payroll.currency)} in deductions` : ""}. The payslip is in the payroll records list.`);
+    } catch (err) {
+      setPaying(null);
+      handleError(err);
+    }
     finally { setBusy(false); }
+  }
+
+  async function openPaymentHistory(row) {
+    setError("");
+    setNotice("");
+    setPaymentHistory({ row, data: null });
+    try {
+      const history = await fetchSalaryPaymentHistory(token, row.id);
+      setPaymentHistory((current) => current?.row.id === row.id ? { row, data: history } : current);
+    } catch (err) {
+      setPaymentHistory(null);
+      handleError(err);
+    }
   }
 
   // While hiring, ask only for what the employer knows; editing shows it all.
@@ -658,6 +739,15 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
       {resource === "payroll" && <div className="payroll-preview"><strong>Net pay: {money(Number(form.base_salary || 0) + Number(form.allowances || 0) - Number(form.deductions || 0), form.currency)}</strong><p>Review the base amount for this period. Deductions, tax, overtime, and partial periods are entered manually. Marking paid records payment; it does not transfer funds.</p></div>}
       <div className="form-actions"><button className="button button-coral" type="submit" value="draft">{busy ? "Saving…" : resource === "contracts" ? "Save draft" : "Save " + config.singular}</button>{resource === "contracts" && <button className="button button-coral" type="submit" value="send">{busy ? "Sending…" : "Save and send for signature"}</button>}<button className="button button-outline" type="button" onClick={() => { setForm(null); setEditing(null); }}>Cancel</button></div></fieldset>
     </form></ModalDialog>}
+    {resource === "payroll" && <section className="panel records-panel" aria-label="Salaries to pay">
+      <div className="records-toolbar"><span className="record-count">{unpaidRows.length} of {toPay.length} to pay for {payMonth}{unpaidTotal && ` · ${unpaidTotal} in total`}</span><div className="records-filters"><input type="month" aria-label="Pay month" value={payMonth} max={today().slice(0, 7)} onChange={(event) => { if (event.target.value) setPayMonth(event.target.value); }} /></div></div>
+      <DataTable columns={payColumns} rows={toPay} token={token} onRowClick={(row) => markPaid(row)} empty={<>No salaries are set for {payMonth}. <Link to="/dashboard/salaries">Add a salary</Link> to pay an employee.</>} actions={(row) => <>
+        {row.pay_status === "Unpaid"
+          ? <button className="button button-coral" type="button" disabled={busy} onClick={() => markPaid(row)}>Pay</button>
+          : <button type="button" onClick={() => markPaid(row)}>View payment</button>}
+        <button type="button" onClick={() => openPaymentHistory(row)}>Payment history</button>
+      </>} />
+    </section>}
     <section className="panel records-panel" aria-label={config.title}>
       <div className="records-toolbar"><span className="record-count">{visible.length} {visible.length === 1 ? "record" : "records"}</span><div className="records-filters"><input type="search" aria-label={`Search ${config.title.toLowerCase()}`} placeholder="Search records…" value={search} onChange={(event) => setSearch(event.target.value)} />{statusField && <select aria-label="Filter by status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option>{statusField.options.map(([value, title]) => <option key={value} value={value}>{title}</option>)}</select>}<button className="button button-outline" type="button" disabled={!visible.length} onClick={() => exportCsv(`${resource}.csv`, config.columns, visible)}>Export CSV</button></div></div>
       <DataTable columns={config.columns} rows={visible} token={token} rowClassName={(row) => requiresAttention(row) ? "attention-row" : ""} onRowClick={resource === "leave" ? setLeaveViewing : undefined} empty={search || status ? "No records match these filters." : `No ${config.title.toLowerCase()} yet. Use Add ${config.singular} to get started.`} actions={(row) => <>
@@ -675,13 +765,53 @@ function ResourcePage({ resource, data, token, account, onChange, onAuthError })
         {resource === "contracts" && row.termination?.initiated_by === "employer" && row.termination.status === "awaiting_acknowledgement" && <span className="muted">Awaiting employee acknowledgement</span>}
         {resource === "contracts" && row.document_name && <><button type="button" onClick={() => setViewing(row)}>View</button><button type="button" disabled={busy} onClick={() => download(row)}>Download</button></>}
         {resource === "employees" && (row.latest_contract || contractsFor(row.id)[0]) && <button type="button" onClick={() => setViewing({ ...(row.latest_contract || contractsFor(row.id)[0]), employee_name: `${row.first_name} ${row.last_name}` })}>View contract</button>}
-        {resource === "salaries" && (paidThisMonth.has(row.employee)
-          ? <span className="muted">Paid for {payMonth}</span>
-          : <button type="button" disabled={busy} onClick={() => markPaid(row)}>Mark paid</button>)}
+        {resource === "payroll" && row.status === "draft" && payrollExtras.loaded && <button type="button" disabled={busy} onClick={() => openCalculation(row)}>{currentCalculation(row) ? "Recalculate deductions" : "Calculate deductions"}</button>}
         {resource === "payroll" && <button type="button" onClick={() => setPayslip(row)}>Payslip</button>}
       </>} />
     </section>
-    {payslip && <Payslip record={payslip} onClose={() => setPayslip(null)} />}
+    {payslip && <Payslip record={payslip} calculation={currentCalculation(payslip)} onClose={() => setPayslip(null)} />}
+    {calculating && <ModalDialog title="Calculate deductions" onClose={() => setCalculating(null)}><form className="record-form" onSubmit={submitCalculation}><fieldset disabled={busy}>
+      <p>Apply any salary advance installment and asset misuse recovery due for <strong>{calculating.row.employee_name}</strong> ({calculating.row.period_start} to {calculating.row.period_end}).</p>
+      <div className="record-fields"><div className="field-wide"><label htmlFor="calculation-other">Other deductions (not advances)</label><input id="calculation-other" type="number" min="0" step="0.01" value={calculating.other} onChange={(event) => setCalculating((current) => ({ ...current, other: event.target.value }))} required /><small className="field-hint">The record's Total deductions is replaced by the calculated total. Recalculating is safe: it replaces the previous result and never deducts an advance twice.</small></div></div>
+      <div className="form-actions"><button className="button button-coral" type="submit">{busy ? "Calculating…" : "Calculate"}</button><button className="button button-outline" type="button" onClick={() => setCalculating(null)}>Cancel</button></div>
+    </fieldset></form></ModalDialog>}
+    {paying && <ModalDialog title={paying.preview && paying.preview.status !== "unpaid" ? "Salary payment" : "Record salary payment"} onClose={() => { if (!busy) setPaying(null); }}><section className="record-form"><fieldset disabled={busy}>
+      {!paying.preview ? <p className="muted" role="status">Calculating deductions…</p> : <>
+        <p>{paying.preview.status === "paid"
+          ? `${paying.row.employee_name}'s salary for ${paying.month} was paid on ${paying.preview.paid_date}. This is the saved breakdown; nothing is recalculated or deducted again.`
+          : paying.preview.status === "draft"
+            ? `A draft payroll record already covers ${paying.month} for ${paying.row.employee_name}. Review it in the payroll records list.`
+            : `Review ${paying.row.employee_name}'s salary for ${paying.month}. Paying creates a locked payroll record and payslip.`}</p>
+        <dl className="pay-breakdown">
+          <div><dt>Monthly salary</dt><dd>{money(paying.preview.monthly_salary, paying.preview.currency)}</dd></div>
+          <div><dt>Salary advances</dt><dd>{money(paying.preview.advance_deductions, paying.preview.currency)}</dd></div>
+          {paying.preview.lines.filter((line) => line.kind === "advance").map((line, index) => <div className="pay-breakdown-line" key={`advance-${index}`}><dt>{line.name}</dt><dd>{money(line.amount, paying.preview.currency)}</dd></div>)}
+          <div><dt>Asset misuse</dt><dd>{money(paying.preview.asset_deductions, paying.preview.currency)}</dd></div>
+          {paying.preview.lines.filter((line) => line.kind === "asset").map((line, index) => <div className="pay-breakdown-line" key={`asset-${index}`}><dt>{line.name}</dt><dd>{money(line.amount, paying.preview.currency)}</dd></div>)}
+          {Number(paying.preview.other_deductions) > 0 && <div><dt>Other deductions</dt><dd>{money(paying.preview.other_deductions, paying.preview.currency)}</dd></div>}
+          <div><dt>Total deductions</dt><dd>{money(paying.preview.total_deductions, paying.preview.currency)}</dd></div>
+          <div className="net-pay"><dt>{paying.preview.status === "paid" ? "Net salary paid" : "Net salary to pay"}</dt><dd>{money(paying.preview.net_salary, paying.preview.currency)}</dd></div>
+        </dl>
+        {paying.preview.status === "unpaid" && <p className="muted">Deductions come from recorded salary advances and asset incidents, are calculated automatically, and never exceed {Number(paying.preview.limit_percent)}% of the salary.</p>}
+        {paying.preview.warnings.map((warning) => <p className="message" key={warning}>{warning}</p>)}
+      </>}
+      <div className="form-actions">{paying.preview?.status === "unpaid" && <button className="button button-coral" type="button" onClick={confirmPaid}>{busy ? "Paying…" : "Pay"}</button>}<button className="button button-outline" type="button" onClick={() => setPaying(null)}>{paying.preview && paying.preview.status !== "unpaid" ? "Close" : "Cancel"}</button></div>
+    </fieldset></section></ModalDialog>}
+    {paymentHistory && <ModalDialog title={`${paymentHistory.row.employee_name} · payment history`} wide onClose={() => setPaymentHistory(null)}><section className="record-form">
+      {!paymentHistory.data ? <p className="muted" role="status">Loading payment history…</p> : <div className="table-scroll"><table>
+        <thead><tr><th scope="col">Month</th><th scope="col">Status</th><th scope="col">Monthly salary</th><th scope="col">Deductions</th><th scope="col">Net salary</th><th scope="col">Paid on</th><th scope="col">Actions</th></tr></thead>
+        <tbody>{paymentHistory.data.months.map((item) => <tr key={item.month}>
+          <td>{item.month}</td>
+          <td><span className={`status-badge status-${item.status === "unpaid" ? "pending" : item.status}`}>{item.status === "unpaid" ? "Unpaid" : label(item.status)}</span></td>
+          <td>{item.monthly_salary === null ? "—" : money(item.monthly_salary, paymentHistory.data.currency)}</td>
+          <td>{item.total_deductions === null ? "—" : money(item.total_deductions, paymentHistory.data.currency)}</td>
+          <td>{item.net_salary === null ? "—" : money(item.net_salary, paymentHistory.data.currency)}</td>
+          <td>{item.paid_date || "—"}</td>
+          <td><div className="row-actions"><button type="button" onClick={() => markPaid(paymentHistory.row, item.month)}>{item.status === "unpaid" ? "Review and pay" : "View breakdown"}</button></div></td>
+        </tr>)}</tbody>
+      </table></div>}
+      <div className="form-actions"><button className="button button-outline" type="button" onClick={() => setPaymentHistory(null)}>Close</button></div>
+    </section></ModalDialog>}
     {viewing && <ContractViewer contract={viewing} token={token} onClose={() => setViewing(null)} onAuthError={onAuthError} />}
     {digitalViewing && <DigitalContractDialog contract={digitalViewing} onClose={() => setDigitalViewing(null)} />}
     {attentionOpen && <ModalDialog title="Items needing attention" onClose={() => setAttentionOpen(false)}><section className="attention-picker"><p>Choose an item to review. It will remain here until you complete its action.</p>{attentionItems.map((item) => <button type="button" className="attention-picker-item" key={`${item.type}-${item.row.id}`} onClick={() => openAttentionItem(item)}><span><strong>{item.row.employee_name}</strong><small>{item.row.title || label(item.row.leave_type)}</small></span><span>{item.type === "worker" ? "Approve worker" : item.type === "termination" ? "Review termination" : "Review leave"}</span></button>)}</section></ModalDialog>}
@@ -840,17 +970,36 @@ function SettingsPage({ token, account, onAccountChange, onAuthError }) {
     }
   }
 
+  function passwordChanged(access, user, refresh) {
+    localStorage.setItem(ACCESS_TOKEN, access);
+    if (refresh) localStorage.setItem(REFRESH_TOKEN, refresh);
+    onAccountChange?.(user);
+  }
+
   return <>
     <div className="section-heading">
       <div>
         <p className="eyebrow dark-eyebrow">WORKSPACE</p>
         <h2>Settings</h2>
-        <p>The platform automatically emails sign-in details when an employer adds an employee.</p>
+        <p>Manage your account details, password, and the email used to invite employees.</p>
       </div>
     </div>
     {error && <p className="message error" role="alert">{error}</p>}
     {notice && <p className="message success" role="status">{notice}</p>}
-    <section className="panel record-form form-launch-card"><div><h3>Invitation email</h3><p className="muted">{configured ? `Emails are sent from ${form.email_host_user || "the platform email address"}.` : "Invitation email has not been configured."}</p></div>{canManage && <button className="button button-coral" type="button" onClick={() => { setError(""); setEditOpen(true); }}>{configured ? "Update email settings" : "Configure email"}</button>}</section>
+    <div className="settings-stack">
+      <section className="panel settings-card" aria-labelledby="settings-account-heading">
+        <h3 id="settings-account-heading">Your account</h3>
+        <dl className="employee-manage-facts">
+          <div><dt>Name</dt><dd>{account?.display_name || account?.username || "Not recorded"}</dd></div>
+          <div><dt>Email</dt><dd>{account?.email || "Not recorded"}</dd></div>
+          <div><dt>Username</dt><dd>{account?.username || "Not recorded"}</dd></div>
+          <div><dt>Role</dt><dd>{account?.role_label || "Employer"}</dd></div>
+          <div><dt>Business</dt><dd>{account?.business_name || "Not recorded"}</dd></div>
+        </dl>
+      </section>
+      <PasswordCard token={token} forced={false} onChanged={passwordChanged} />
+      <section className="panel record-form form-launch-card"><div><h3>Invitation email</h3><p className="muted">{configured ? `Emails are sent from ${form.email_host_user || "the platform email address"}.` : "Invitation email has not been configured."}</p></div>{canManage && <button className="button button-coral" type="button" onClick={() => { setError(""); setEditOpen(true); }}>{configured ? "Update email settings" : "Configure email"}</button>}</section>
+    </div>
     {editOpen && <ModalDialog title="Invitation email settings" onClose={() => setEditOpen(false)}><form className="record-form" onSubmit={submit}>
       <h3>Invitation email</h3>
       <p className="muted">{configured
@@ -922,11 +1071,47 @@ function PlatformMessagesPage({ token, onAuthError }) {
   </>;
 }
 
+// Every manager page appears exactly once: as a top-level tab or inside a group.
+const managerNav = [
+  { label: "Dashboard", to: "/dashboard", end: true },
+  { key: "employees" },
+  { key: "contracts" },
+  { key: "attendance", label: "Attendance / Shifts" },
+  { key: "leave" },
+  { label: "Schedule", items: [{ key: "calendar-events" }, { key: "holidays" }] },
+  { label: "Payroll", items: [
+    { key: "salaries" }, { key: "payroll" },
+    { key: "asset-misuse", label: "Asset Misuse" }, { key: "salary-advances", label: "Salary Advances" },
+  ] },
+  { label: "Communication", items: [{ key: "announcements" }, { key: "messages", label: "Messages" }, { key: "google-meet", label: "Google Meet" }] },
+  { key: "reports", label: "Reports" },
+  { key: "settings", label: "Settings" },
+];
+
+function badgeLabel(key, count) {
+  if (key === "calendar-events") return `${count} events in the next 7 days`;
+  if (key === "messages") return `${count} unread messages`;
+  if (key === "salary-advances") return `${count} salary advance requests awaiting approval`;
+  return `${count} items need attention`;
+}
+
+function managerNavItems(badges) {
+  const entry = (item) => ({
+    ...item,
+    label: item.label || modules[item.key].title,
+    to: item.to || `/dashboard/${item.key}`,
+    badge: badges[item.key] || 0,
+    badgeLabel: badgeLabel(item.key, badges[item.key]),
+  });
+  return managerNav.map((item) => item.items ? { label: item.label, items: item.items.map(entry) } : entry(item));
+}
+
 export default function ManagerDashboard({ token, account, onLogout, onAuthError, onAccountChange }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const [unreadMessages, setUnreadMessages] = useState(0);
+  const [pendingAdvanceRequests, setPendingAdvanceRequests] = useState(0);
   useEffect(() => {
     let cancelled = false;
     Promise.all(Object.keys(modules).map(async (resource) => [resource, await fetchRecords(token, resource)])).then((entries) => {
@@ -965,6 +1150,16 @@ export default function ManagerDashboard({ token, account, onLogout, onAuthError
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [token]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const refreshAdvanceRequests = () => fetchRecords(token, "salary-advance-requests").then((rows) => {
+      if (!cancelled) setPendingAdvanceRequests(rows.filter((row) => row.status === "pending").length);
+    }).catch(() => {});
+    refreshAdvanceRequests();
+    const timer = window.setInterval(refreshAdvanceRequests, 15000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [token]);
+
   function updateRecords(resource, record, deleted = false) {
     setData((current) => ({ ...current, [resource]: deleted ? current[resource].filter((row) => row.id !== record.id) : current[resource].some((row) => row.id === record.id) ? current[resource].map((row) => row.id === record.id ? record : row) : [record, ...current[resource]] }));
   }
@@ -978,24 +1173,21 @@ export default function ManagerDashboard({ token, account, onLogout, onAuthError
   } : {};
 
   return <>
-    <aside className="dashboard-sidebar" aria-label="Manager menu"><Link className="brand" to="/"><span className="brand-mark">E</span><span>Employee<span className="brand-dot">.</span></span></Link><p className="sidebar-label">{account?.business_name || "MANAGER WORKSPACE"}</p>
-      <div className="workspace-identity"><strong>{account?.display_name || account?.username}</strong><span>{account?.role_label || "Employer"}</span></div>
-      <nav className="sidebar-nav" aria-label="Manager navigation">
-        <NavLink end to="/dashboard" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Overview</NavLink>
-        {Object.entries(modules).map(([key, config]) => <NavLink key={key} to={`/dashboard/${key}`} className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}><span>{key === "attendance" ? "Attendance / Shifts" : config.title}</span>{attention[key] > 0 && <span className="attention-badge" aria-label={key === "calendar-events" ? `${attention[key]} events in the next 7 days` : `${attention[key]} items need attention`}>{attention[key]}</span>}</NavLink>)}
-        <NavLink to="/dashboard/messages" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}><span>Messages</span>{unreadMessages > 0 && <span className="attention-badge" aria-label={`${unreadMessages} unread messages`}>{unreadMessages}</span>}</NavLink>
-        <NavLink to="/dashboard/google-meet" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Google Meet</NavLink>
-        <NavLink to="/dashboard/reports" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Reports</NavLink>
-        <NavLink to="/dashboard/settings" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Settings</NavLink>
-      </nav><div className="sidebar-bottom"><Link className="sidebar-link back-link" to="/">← Back to main site</Link><button className="sidebar-signout" type="button" onClick={onLogout}>Sign out</button></div>
-    </aside>
-    <main className="dashboard-main"><section className="workspace dashboard-workspace">
+    <DashboardTopNav
+      items={managerNavItems({ ...attention, messages: unreadMessages, "salary-advances": pendingAdvanceRequests })}
+      identity={{ eyebrow: account?.business_name || "MANAGER WORKSPACE", name: account?.display_name || account?.username || "Manager", role: account?.role_label || "Employer" }}
+      navLabel="Manager navigation"
+      onLogout={onLogout}
+    />
+    <main className="dashboard-main topnav-main"><section className="workspace dashboard-workspace">
       {error ? <div className="panel records-panel"><p className="message error" role="alert">{error}</p><button type="button" className="button button-coral" onClick={() => { setError(""); setRetry((value) => value + 1); }}>Retry loading</button></div> : !data ? <p className="empty-state" role="status">Loading manager workspace…</p> : <Routes>
         <Route index element={<ReportsPage key="overview" token={token} onAuthError={onAuthError} overview />} />
         <Route path="reports" element={<ReportsPage key="reports" token={token} onAuthError={onAuthError} />} />
         <Route path="messages" element={<PlatformMessagesPage token={token} onAuthError={onAuthError} />} />
         <Route path="google-meet" element={<GoogleMeetPage token={token} employees={data.employees || []} onChange={updateRecords} />} />
         <Route path="settings" element={<SettingsPage token={token} account={account} onAccountChange={onAccountChange} onAuthError={onAuthError} />} />
+        <Route path="asset-misuse" element={<AssetMisusePage token={token} employees={data.employees || []} onAuthError={onAuthError} />} />
+        <Route path="salary-advances" element={<SalaryAdvancesPage token={token} employees={data.employees || []} onAuthError={onAuthError} onRequestsChange={setPendingAdvanceRequests} />} />
         {Object.keys(modules).map((resource) => <Route key={resource} path={resource} element={modules[resource].custom
           ? <ManagerCalendarPage token={token} events={data[resource] || []} onChange={updateRecords} onAuthError={onAuthError} />
           : <ResourcePage key={resource} resource={resource} data={data} token={token} account={account} onChange={updateRecords} onAuthError={onAuthError} />} />)}

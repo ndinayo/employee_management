@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import heroImage from "./assets/images/hero.jpeg";
 import { ACCESS_TOKEN, REFRESH_TOKEN } from "./constants";
-import { fetchAccount } from "./api";
+import { clockMyAttendance, fetchAccount } from "./api";
 import AuthForm from "./AuthForm";
 import EmployeeWorkspace from "./components/EmployeeWorkspace";
 import EmployerWorkspace from "./components/EmployerWorkspace";
@@ -253,6 +253,16 @@ function App() {
       : workspacePath(profile));
   }
 
+  // Signing in starts the employee's day shift; the server refuses it when they
+  // are on leave, already checked in, or not yet allowed to clock in.
+  async function handleSignIn(access, profile, refresh) {
+    if (!profile.can_manage && !profile.can_admin && profile.has_employee_record
+        && profile.workspace_approved && !profile.must_change_password) {
+      await clockMyAttendance(access, "check_in", "day", new Date().toTimeString().slice(0, 5)).catch(() => {});
+    }
+    handleAuthenticated(access, profile, refresh);
+  }
+
   const pendingAccount = <main className="workspace account-workspace">
     {error ? <><p className="message error" role="alert">{error}</p><button className="button button-coral" onClick={() => { setError(""); setRetry((value) => value + 1); }}>Retry</button><button className="button button-outline" onClick={handleLogout}>Sign out</button></>
       : <p role="status">Loading your account…</p>}
@@ -264,11 +274,14 @@ function App() {
     <SiteFooter />
   </div>;
 
+  // A signed-in user stays inside their workspace: the public pages are only
+  // reachable again after signing out.
   return <Routes>
     {["/", "/about", "/signin"].map((path) => <Route key={path} path={path} element={
-      <HomePage token={token} account={account} onAuthenticated={handleAuthenticated}
-                onLogout={handleLogout} error={error}
-                intent={path === "/" ? "" : path.slice(1)} />} />)}
+      token ? account ? <Navigate to={workspacePath(account)} replace /> : pendingAccount
+        : <HomePage token={token} account={account} onAuthenticated={handleSignIn}
+                    onLogout={handleLogout} error={error}
+                    intent={path === "/" ? "" : path.slice(1)} />} />)}
     <Route path="/forgot-password" element={withSiteChrome(<ForgotPasswordPage />)} />
     <Route path="/reset-password" element={withSiteChrome(<ResetPasswordPage />)} />
     <Route path="/MyAccount/*" element={!token ? <RememberEmployeeDestination /> : !account ? withSiteChrome(pendingAccount) : account.can_admin ? <Navigate to="/admin" replace /> : <EmployeeWorkspace account={account} token={token} onAccountChange={handleAuthenticated} onLogout={handleLogout} />} />

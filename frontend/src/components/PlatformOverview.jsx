@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { fetchAdminHealth, fetchAdminOverview } from "../api";
+import { fetchAdminOverview } from "../api";
 
-// Every figure on this page comes from /api/admin/overview/ and /api/admin/health/,
-// counted from live rows. Nothing here is a fixed value.
+// Every figure on this page comes from /api/admin/overview/, counted from live
+// rows. Nothing here is a fixed value.
 
 function shortDate(value) {
   if (!value) return "Never";
@@ -50,66 +50,8 @@ function CompanyList({ title, description, rows, empty, stamp }) {
   </section>;
 }
 
-// A plain inline chart: no library, no external request, and it reads the same
-// series the API returns.
-function GrowthChart({ points }) {
-  const width = 640;
-  const height = 180;
-  const padding = { top: 12, right: 12, bottom: 26, left: 32 };
-  const plotWidth = width - padding.left - padding.right;
-  const plotHeight = height - padding.top - padding.bottom;
-  const peak = Math.max(1, ...points.map((point) => point.companies));
-  const step = plotWidth / Math.max(points.length, 1);
-  const barWidth = Math.max(6, step * 0.55);
-
-  return <div className="growth-chart">
-    <svg viewBox={`0 0 ${width} ${height}`} role="img"
-         aria-label={`Companies added each month: ${points.map((point) => `${point.label} ${point.companies}`).join(", ")}`}>
-      {[0, 0.5, 1].map((fraction) => {
-        const y = padding.top + plotHeight * (1 - fraction);
-        return <g key={fraction}>
-          <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} className="grid-line" />
-          <text x={padding.left - 7} y={y + 4} className="axis-label" textAnchor="end">
-            {Math.round(peak * fraction)}
-          </text>
-        </g>;
-      })}
-      {points.map((point, index) => {
-        const barHeight = (point.companies / peak) * plotHeight;
-        const x = padding.left + index * step + (step - barWidth) / 2;
-        return <g key={point.month}>
-          <rect x={x} y={padding.top + plotHeight - barHeight} width={barWidth}
-                height={Math.max(barHeight, point.companies ? 2 : 0)} rx="3" className="growth-bar">
-            <title>{`${point.label}: ${point.companies} added, ${point.total} total`}</title>
-          </rect>
-          <text x={x + barWidth / 2} y={height - 8} className="axis-label" textAnchor="middle">
-            {point.label}
-          </text>
-        </g>;
-      })}
-    </svg>
-  </div>;
-}
-
-const HEALTH_LABELS = {
-  operational: "Operational", degraded: "Degraded", down: "Down",
-  not_configured: "Not set up", unknown: "Unknown",
-};
-
-function HealthRow({ name, service }) {
-  const status = service?.status || "unknown";
-  return <div className="health-row">
-    <div>
-      <strong>{name}</strong>
-      <small>{service?.detail || "No detail reported."}</small>
-    </div>
-    <span className={`status-badge health-${status}`}>{HEALTH_LABELS[status] || status}</span>
-  </div>;
-}
-
 export default function PlatformOverview({ token, onAuthError }) {
   const [data, setData] = useState(null);
-  const [health, setHealth] = useState(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -123,18 +65,6 @@ export default function PlatformOverview({ token, onAuthError }) {
     const timer = window.setInterval(load, 30000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [token, onAuthError]);
-
-  // Health touches the disk and the database, so it is polled far less often
-  // than the counts.
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => fetchAdminHealth(token).then((result) => {
-      if (!cancelled) setHealth(result);
-    }).catch(() => {});
-    load();
-    const timer = window.setInterval(load, 120000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [token]);
 
   if (error && !data) return <>
     <div className="section-heading"><div><p className="eyebrow dark-eyebrow">PLATFORM</p><h2>Platform overview</h2></div></div>
@@ -184,12 +114,6 @@ export default function PlatformOverview({ token, onAuthError }) {
             tone={growth > 0 ? "good" : growth < 0 ? "bad" : undefined}
             note={`${usage.companies_this_month} this month, ${usage.companies_last_month} last`} />
     </div>
-    <section className="panel platform-panel">
-      <h3>New companies each month</h3>
-      <p className="panel-note">The last 12 months, counted from registration dates.</p>
-      <GrowthChart points={usage.growth} />
-    </section>
-
     <h3 className="platform-heading">Company lifecycle</h3>
     <div className="platform-grid">
       <CompanyList title="Recent registrations" description="The newest companies on the platform."
@@ -245,26 +169,6 @@ export default function PlatformOverview({ token, onAuthError }) {
             <span className="platform-stamp">{shortDate(row.created_at)}</span>
           </li>)}
         </ul>}
-    </section>
-
-    <h3 className="platform-heading">Platform health</h3>
-    <section className="panel platform-panel">
-      {!health ? <p className="empty-state" role="status">Checking services…</p> : <>
-        <div className="health-list">
-          <HealthRow name="API" service={health.api} />
-          <HealthRow name="Database" service={health.database} />
-          <HealthRow name="Email service" service={health.email} />
-          <HealthRow name="Storage" service={health.storage} />
-        </div>
-        <dl className="health-meta">
-          <div><dt>Version</dt><dd>{health.application.version}</dd></div>
-          <div><dt>Environment</dt><dd>{health.application.environment}</dd></div>
-          <div><dt>Django</dt><dd>{health.application.django}</dd></div>
-          <div><dt>Python</dt><dd>{health.application.python}</dd></div>
-          <div><dt>Host</dt><dd>{health.application.platform}</dd></div>
-          <div><dt>Time zone</dt><dd>{health.application.time_zone}</dd></div>
-        </dl>
-      </>}
     </section>
   </>;
 }

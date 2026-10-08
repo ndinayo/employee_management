@@ -150,6 +150,14 @@ export function markSalaryPaid(token, id, body) {
   return request(`/api/salaries/${id}/mark_paid/`, { method: "POST", token, body });
 }
 
+export function fetchSalaryPaymentPreview(token, id, month) {
+  return request(`/api/salaries/${id}/payment_preview/?${new URLSearchParams({ month })}`, { token });
+}
+
+export function fetchSalaryPaymentHistory(token, id) {
+  return request(`/api/salaries/${id}/payment_history/`, { token });
+}
+
 export function fetchReports(token, date, days) {
   const query = new URLSearchParams({ date, days });
   return request(`/api/reports/?${query}`, { token });
@@ -245,6 +253,22 @@ export function updateMyLeave(token, id, body) {
 
 export function cancelMyLeave(token, id) {
   return request(`/api/me/leave/${id}/`, { method: "DELETE", token });
+}
+
+export function fetchMyPayroll(token) {
+  return request("/api/me/payroll/", { token });
+}
+
+export function requestMySalaryAdvance(token, body) {
+  return request("/api/me/salary-advance-requests/", { method: "POST", token, body });
+}
+
+export function cancelMySalaryAdvanceRequest(token, id) {
+  return request(`/api/me/salary-advance-requests/${id}/`, { method: "DELETE", token });
+}
+
+export function decideSalaryAdvanceRequest(token, id, decision, body = {}) {
+  return request(`/api/salary-advance-requests/${id}/${decision}/`, { method: "POST", token, body });
 }
 
 export function fetchMyContracts(token) {
@@ -374,4 +398,24 @@ export function markAllMyCalendarRead(token) {
 
 export function markAllAdminThreadsRead(token) {
   return request("/api/admin/messages/read-all/", { method: "POST", token });
+}
+
+// Payroll extensions: salary advances and asset misuse. They sit beside the
+// existing payroll endpoints.
+export function calculatePayroll(token, payroll, otherDeductions) {
+  const body = { payroll };
+  if (otherDeductions !== undefined && otherDeductions !== "") body.other_deductions = otherDeductions;
+  return request("/api/payroll-calculations/", { method: "POST", token, body });
+}
+
+export function addAdvanceRepayment(token, id, body) {
+  return request(`/api/salary-advances/${id}/repayments/`, { method: "POST", token, body });
+}
+
+export function fetchAssetSummary(token) {
+  return request("/api/asset-incidents/summary/", { token });
+}
+
+export function downloadEvidence(token, resource, id) {
+  return request(`/api/${resource}/${id}/evidence/`, { token, download: true });
 }

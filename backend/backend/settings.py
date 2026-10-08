@@ -155,12 +155,16 @@ returns **404**.
         {"name": "Employer · Reports", "description": "Employer only. The manager dashboard roll-up for one date."},
         {"name": "Employer · Messages", "description": "Employer only. This company's own conversation with the platform team."},
         {"name": "Employee workspace", "description": "Employee only, and only after the employer approves the signed contract."},
+        {"name": "Employer · Salary advances", "description": "Employer only. Interest-free advances repaid through payroll installments."},
+        {"name": "Employer · Asset misuse", "description": "Employer only. Damaged, lost or misused asset incidents. Nothing is deducted from salary."},
     ],
     # Several models call a field "status", so name those enums explicitly.
     "ENUM_NAME_OVERRIDES": {
         "ContractStatusEnum": "api.schema.CONTRACT_STATUS_CHOICES",
         "LeaveStatusEnum": "api.schema.LEAVE_STATUS_CHOICES",
         "CompanyStatusEnum": "api.schema.COMPANY_STATUS_CHOICES",
+        "AssetIncidentStatusEnum": "api.schema.ASSET_INCIDENT_STATUS_CHOICES",
+        "PayrollStatusEnum": "api.schema.PAYROLL_STATUS_CHOICES",
     },
     "POSTPROCESSING_HOOKS": [
         "drf_spectacular.hooks.postprocess_schema_enums",

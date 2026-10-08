@@ -10,6 +10,7 @@ from api.accounts import (AccountView, EmailSettingsView, MyContractSignView, My
                           PasswordChangeView, PasswordResetConfirmView,
                           PasswordResetRequestView, SignupView, TokenView)
 from api.dashboard import AdminHealthView, AdminOverviewView
+from api.my_payroll import MyPayrollView, MySalaryAdvanceRequestDetailView, MySalaryAdvanceRequestsView
 from api.messaging import (AdminMessageListView, AdminMessageReadAllView, AdminMessageReadView,
                            AdminMessageThreadView, CompanyMessageReadView, CompanyMessageView)
 from api.platform import (AdminBusinessDetailView, AdminBusinessListView, AdminEmployeeDetailView,
@@ -50,6 +51,10 @@ urlpatterns = [
     path("api/me/attendance/", MyAttendanceView.as_view(), name="my-attendance"),
     path("api/me/leave/", MyLeaveView.as_view(), name="my-leave"),
     path("api/me/leave/<int:pk>/", MyLeaveDetailView.as_view(), name="my-leave-detail"),
+    path("api/me/payroll/", MyPayrollView.as_view(), name="my-payroll"),
+    path("api/me/salary-advance-requests/", MySalaryAdvanceRequestsView.as_view(), name="my-salary-advance-requests"),
+    path("api/me/salary-advance-requests/<int:pk>/", MySalaryAdvanceRequestDetailView.as_view(),
+         name="my-salary-advance-request"),
     path("api/me/contracts/", MyContractsView.as_view(), name="my-contracts"),
     path("api/me/contracts/<int:pk>/sign/", MyContractSignView.as_view(), name="my-contract-sign"),
     path("api/me/contracts/<int:pk>/termination/", MyContractTerminationView.as_view(), name="my-contract-termination"),

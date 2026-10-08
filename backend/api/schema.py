@@ -9,7 +9,7 @@ from drf_spectacular.extensions import OpenApiViewExtension
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema
 from rest_framework import serializers
 
-from .models import Business, Contract, LeaveRequest
+from .models import AssetIncident, Business, Contract, LeaveRequest, Payroll
 
 # Several models use a field called "status" with different choices, which would
 # otherwise leave the generator naming two of them after a hash. Read straight
@@ -18,6 +18,8 @@ from .models import Business, Contract, LeaveRequest
 CONTRACT_STATUS_CHOICES = Contract._meta.get_field("status").choices
 LEAVE_STATUS_CHOICES = LeaveRequest._meta.get_field("status").choices
 COMPANY_STATUS_CHOICES = Business.STATUSES
+ASSET_INCIDENT_STATUS_CHOICES = AssetIncident.STATUSES
+PAYROLL_STATUS_CHOICES = Payroll._meta.get_field("status").choices
 
 
 # --- Shared error shapes -----------------------------------------------------

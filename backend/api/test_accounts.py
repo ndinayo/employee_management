@@ -589,6 +589,27 @@ class EmployeeOnboardingTests(APITestCase):
         self.assertEqual(acknowledged.data["termination"]["status"], "acknowledged")
         self.assertEqual(Contract.objects.get(pk=contract.pk).end_date, last_day)
 
+    def test_shift_left_open_days_ago_does_not_block_checking_in(self):
+        self.hire()
+        employee = Employee.objects.get(email="aline@example.com")
+        self.signed_contract(employee)
+        self.client.force_authenticate(employee.account.user)
+        today = timezone.localdate()
+        forgotten = Attendance.objects.create(
+            employee=employee, date=today - timedelta(days=10), shift="night",
+            check_in_at=timezone.now() - timedelta(days=10))
+        Attendance.objects.create(
+            employee=employee, date=today - timedelta(days=1), shift="night",
+            check_in_at=timezone.now() - timedelta(hours=20))
+
+        blocked = self.client.post("/api/me/attendance/", {"action": "check_in", "shift": "day", "time": "00:01"}, format="json")
+        self.assertEqual(blocked.status_code, 400)
+        Attendance.objects.filter(date=today - timedelta(days=1)).delete()
+        checked_in = self.client.post("/api/me/attendance/", {"action": "check_in", "shift": "day", "time": "00:01"}, format="json")
+        self.assertEqual(checked_in.status_code, 200, checked_in.data)
+        forgotten.refresh_from_db()
+        self.assertIsNone(forgotten.check_out_at)
+
     def test_night_shift_can_check_out_after_midnight(self):
         self.hire()
         employee = Employee.objects.get(email="aline@example.com")

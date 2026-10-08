@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   deleteAdminBusiness, deleteAdminEmployee, fetchAdminBusinesses, fetchAdminEmployees,
   fetchAdminEmployers, fetchAdminOverview, fetchAdminThread, fetchAdminThreads,
@@ -7,6 +7,7 @@ import {
   saveCompanyStatus, sendAdminMessage,
 } from "../api";
 import Conversation from "./Conversation";
+import DashboardTopNav from "./DashboardTopNav";
 import PlatformOverview from "./PlatformOverview";
 import ModalDialog from "./ModalDialog";
 import { useConfirm } from "./ConfirmDialog";
@@ -484,29 +485,24 @@ export default function AdminDashboard({ token, account, onLogout, onAuthError }
     const timer = window.setInterval(refresh, 15000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [token, onAuthError]);
-  // The sidebar badges read the same live overview the dashboard does.
+  // The tab badges read the same live overview the dashboard does.
   const pendingCompanies = attention?.scale?.pending_companies || 0;
   const dormantEmployers = attention?.issues?.dormant_employers || 0;
   const unreadMessages = attention?.messages?.unread || 0;
   return <>
-    <aside className="dashboard-sidebar" aria-label="Admin menu">
-      <Link className="brand" to="/"><span className="brand-mark">E</span><span>Employee<span className="brand-dot">.</span></span></Link>
-      <p className="sidebar-label">SUPER ADMIN</p>
-      <div className="workspace-identity"><strong>{account?.display_name || account?.username}</strong><span>{account?.role_label || "Administrator"}</span></div>
-      <nav className="sidebar-nav" aria-label="Admin navigation">
-        <NavLink end to="/admin" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Overview</NavLink>
-        <NavLink to="/admin/companies" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}><span>Companies</span>{pendingCompanies > 0 && <span className="attention-badge" aria-label={`${pendingCompanies} companies awaiting verification`}>{pendingCompanies}</span>}</NavLink>
-        <NavLink to="/admin/employers" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}><span>Employers</span>{dormantEmployers > 0 && <span className="attention-badge" aria-label={`${dormantEmployers} employers have never signed in`}>{dormantEmployers}</span>}</NavLink>
-        <NavLink to="/admin/employees" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}>Employees</NavLink>
-        <NavLink to="/admin/messages" className={({ isActive }) => `sidebar-link${isActive ? " selected" : ""}`}><span>Messages</span>{unreadMessages > 0 && <span className="attention-badge" aria-label={`${unreadMessages} unread messages`}>{unreadMessages}</span>}</NavLink>
-      </nav>
-      <div className="sidebar-bottom">
-        <p className="sidebar-label">{account?.email}</p>
-        <Link className="sidebar-link back-link" to="/">← Back to main site</Link>
-        <button className="sidebar-signout" type="button" onClick={onLogout}>Sign out</button>
-      </div>
-    </aside>
-    <main className="dashboard-main"><section className="workspace dashboard-workspace">
+    <DashboardTopNav
+      items={[
+        { label: "Overview", to: "/admin", end: true },
+        { label: "Companies", to: "/admin/companies", badge: pendingCompanies, badgeLabel: `${pendingCompanies} companies awaiting verification` },
+        { label: "Employers", to: "/admin/employers", badge: dormantEmployers, badgeLabel: `${dormantEmployers} employers have never signed in` },
+        { label: "Employees", to: "/admin/employees" },
+        { label: "Messages", to: "/admin/messages", badge: unreadMessages, badgeLabel: `${unreadMessages} unread messages` },
+      ]}
+      identity={{ eyebrow: "SUPER ADMIN", name: account?.display_name || account?.username || "Administrator", role: account?.role_label || "Administrator", detail: account?.email }}
+      navLabel="Admin navigation"
+      onLogout={onLogout}
+    />
+    <main className="dashboard-main topnav-main"><section className="workspace dashboard-workspace">
       {!atOverview && <BackButton />}
       <Routes>
         <Route index element={<PlatformOverview token={token} onAuthError={onAuthError} />} />

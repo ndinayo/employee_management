@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { DigitalContractDocument, SignaturePad } from "./DigitalContract";
 import CompanyCalendar, { EmployeeAnnouncements } from "./CompanyCalendar";
+import EmployeePayroll from "./EmployeePayroll";
 import ModalDialog from "./components/ModalDialog";
 import PasswordInput from "./components/PasswordInput";
+import DashboardTopNav from "./components/DashboardTopNav";
 import { useConfirm } from "./components/ConfirmDialog";
 import { acknowledgeMyContractTermination, cancelMyLeave, changePassword, clockMyAttendance, fetchAccount, fetchMyAnnouncements, fetchMyAttendance, fetchMyCalendar, fetchMyContracts, fetchMyLeave, fetchMyPhoto, fetchMyProfile, markAllMyAnnouncementsRead, markAllMyCalendarRead, markMyAnnouncementRead, markMyCalendarEventRead, requestMyContractTermination, saveMyProfile, signMyContract, submitMyLeave, updateMyLeave } from "./api";
 import { label, longDate, today } from "./managerConfig";
@@ -17,7 +19,7 @@ const EDITABLE = [
   { name: "address", title: "Home address", type: "textarea", autoComplete: "street-address" },
 ];
 
-function PasswordCard({ token, forced, onChanged }) {
+export function PasswordCard({ token, forced, onChanged }) {
   const [fields, setFields] = useState({ current_password: "", new_password: "", new_password_confirm: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -538,33 +540,37 @@ function employeeViewFromLocation(location) {
   const requested = pathView || location.hash.slice(1).toLowerCase();
   if (["contracts", "contract"].includes(requested)) return "contract";
   if (["personal-details", "security", "profile"].includes(requested)) return "profile";
-  if (["attendance", "leave", "announcements", "calendar"].includes(requested)) return requested;
+  if (["attendance", "leave", "payroll", "announcements", "calendar"].includes(requested)) return requested;
   return "overview";
 }
 
-function EmployeeSidebar({ account, onLogout, linked, forced, contractOnly = false, contractAttention = 0, announcementAttention = 0, calendarAttention = 0, view }) {
-  const link = (key, title, count = 0) => <Link className={`sidebar-link${view === key ? " selected" : ""}`} to={key === "overview" ? "/MyAccount" : `/MyAccount/${key}`}><span>{title}</span>{count > 0 && <span className="attention-badge" aria-label={`${count} items need attention`}>{count}</span>}</Link>;
-  return <aside className="dashboard-sidebar employee-sidebar" aria-label="Employee menu">
-    <Link className="brand" to="/"><span className="brand-mark">E</span><span>Employee<span className="brand-dot">.</span></span></Link>
-    <p className="sidebar-label">{account.business_name || "EMPLOYEE WORKSPACE"}</p>
-    <div className="workspace-identity"><strong>{account.display_name || account.username}</strong><span>{account.role_label || "Employee"}</span></div>
-    <nav className="sidebar-nav" aria-label="Employee navigation">
-      {!contractOnly && link("overview", "Overview")}
-      {contractOnly && link("contract", "Contract", contractAttention)}
-      {linked && !forced && !contractOnly && <>
-        {link("profile", "Profile")}
-      {link("attendance", "Attendance / Shifts")}
-        {link("leave", "Leave")}
-        {link("contract", "Contract", contractAttention)}
-        {link("announcements", "Announcements", announcementAttention)}
-        {link("calendar", "Calendar", calendarAttention)}
-      </>}
-    </nav>
-    <div className="sidebar-bottom">
-      <Link className="sidebar-link back-link" to="/">Back to main site</Link>
-      <button className="sidebar-signout" type="button" onClick={onLogout}>Sign out</button>
-    </div>
-  </aside>;
+function EmployeeTopNav({ account, onLogout, linked, forced, contractOnly = false, contractAttention = 0, announcementAttention = 0, calendarAttention = 0, view }) {
+  const link = (key, label, count = 0) => ({
+    label,
+    to: key === "overview" ? "/MyAccount" : `/MyAccount/${key}`,
+    selected: view === key,
+    badge: count,
+    badgeLabel: `${count} items need attention`,
+  });
+  const items = [
+    ...(!contractOnly ? [link("overview", "Overview")] : []),
+    ...(contractOnly ? [link("contract", "Contract", contractAttention)] : []),
+    ...(linked && !forced && !contractOnly ? [
+      link("profile", "Profile"),
+      link("attendance", "Attendance / Shifts"),
+      link("leave", "Leave"),
+      link("payroll", "Payroll"),
+      link("contract", "Contract", contractAttention),
+      link("announcements", "Announcements", announcementAttention),
+      link("calendar", "Calendar", calendarAttention),
+    ] : []),
+  ];
+  return <DashboardTopNav
+    items={items}
+    identity={{ eyebrow: account.business_name || "EMPLOYEE WORKSPACE", name: account.display_name || account.username || "Employee", role: account.role_label || "Employee" }}
+    navLabel="Employee navigation"
+    onLogout={onLogout}
+  />;
 }
 
 export default function AccountPage({ account, token, onAccountChange, onLogout }) {
@@ -575,9 +581,42 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
   const [contractAttention, setContractAttention] = useState(0);
   const [announcements, setAnnouncements] = useState([]);
   const [calendarEvents, setCalendarEvents] = useState([]);
+  const [signOutPrompt, setSignOutPrompt] = useState(null);
   const view = employeeViewFromLocation(location);
   const forced = Boolean(account.must_change_password);
   const contractLocked = Boolean(account.has_employee_record && !account.workspace_approved);
+
+  // An employee still on shift chooses whether signing out also checks them out.
+  async function requestSignOut() {
+    if (!account.has_employee_record || !account.workspace_approved || forced) { onLogout(); return; }
+    try {
+      const day = await fetchMyAttendance(token);
+      const active = (day.shifts || []).find((item) => item.check_in_at && !item.check_out_at);
+      if (active) { setSignOutPrompt({ attendance: active, busy: false, error: "" }); return; }
+    } catch {
+      // Attendance is unavailable; signing out still goes ahead.
+    }
+    onLogout();
+  }
+
+  async function checkOutAndSignOut() {
+    setSignOutPrompt((current) => ({ ...current, busy: true, error: "" }));
+    try {
+      await clockMyAttendance(token, "check_out", signOutPrompt.attendance.shift, currentClockTime());
+      onLogout();
+    } catch (err) {
+      setSignOutPrompt((current) => current && { ...current, busy: false, error: err.message });
+    }
+  }
+
+  const signOutDialog = signOutPrompt && <ModalDialog title="Sign out" onClose={() => { if (!signOutPrompt.busy) setSignOutPrompt(null); }}><section className="record-form">
+    <p>You are still checked in to the {label(signOutPrompt.attendance.shift).toLowerCase()} shift since {timeOf(signOutPrompt.attendance.check_in_at)}. Do you want to check out before signing out?</p>
+    {signOutPrompt.error && <p className="message error" role="alert">{signOutPrompt.error}</p>}
+    <div className="form-actions">
+      <button className="button button-coral" type="button" disabled={signOutPrompt.busy} onClick={checkOutAndSignOut}>{signOutPrompt.busy ? "Checking out…" : "Check out and sign out"}</button>
+      <button className="button button-outline" type="button" disabled={signOutPrompt.busy} onClick={onLogout}>Sign out without checking out</button>
+    </div>
+  </section></ModalDialog>;
 
   const load = useCallback(() => {
     if (!account.has_employee_record || contractLocked) return;
@@ -629,8 +668,8 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
   // Until the temporary password is replaced, the only thing on offer is
   // replacing it.
   if (forced) {
-    return <><EmployeeSidebar account={account} onLogout={onLogout} linked={account.has_employee_record} forced view="overview" />
-      <main className="dashboard-main employee-main"><section className="workspace account-workspace">
+    return <><EmployeeTopNav account={account} onLogout={onLogout} linked={account.has_employee_record} forced view="overview" />
+      <main className="dashboard-main employee-main topnav-main"><section className="workspace account-workspace">
       <div className="section-heading" id="overview">
         <div>
           <p className="eyebrow dark-eyebrow">WELCOME</p>
@@ -646,8 +685,8 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
 
 
   if (contractLocked) {
-    return <><EmployeeSidebar account={account} onLogout={onLogout} linked contractOnly contractAttention={contractAttention} view="contract" />
-      <main className="dashboard-main employee-main"><section className="workspace account-workspace">
+    return <><EmployeeTopNav account={account} onLogout={onLogout} linked contractOnly contractAttention={contractAttention} view="contract" />
+      <main className="dashboard-main employee-main topnav-main"><section className="workspace account-workspace">
         {loadError && <p className="message error" role="alert">{loadError}</p>}
         <ContractsCard token={token} profile={{ first_name: account.display_name || account.username, last_name: "" }} onSigned={() => onAccountChange(token, { ...account, has_signed_contract: true })} onAttentionChange={setContractAttention} />
       </section></main>
@@ -677,8 +716,8 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
   const unreadAnnouncements = announcements.filter((item) => !item.is_read).length;
   const unreadCalendarEvents = calendarEvents.filter((item) => !item.is_read).length;
 
-  return <><EmployeeSidebar account={account} onLogout={onLogout} linked={account.has_employee_record} forced={false} contractAttention={contractAttention} announcementAttention={unreadAnnouncements} calendarAttention={unreadCalendarEvents} view={view} />
-    <main className="dashboard-main employee-main"><section className="workspace account-workspace">
+  return <><EmployeeTopNav account={account} onLogout={requestSignOut} linked={account.has_employee_record} forced={false} contractAttention={contractAttention} announcementAttention={unreadAnnouncements} calendarAttention={unreadCalendarEvents} view={view} />
+    <main className="dashboard-main employee-main topnav-main"><section className="workspace account-workspace">
     {view === "overview" && <><div className="section-heading" id="overview">
       <div>
         <p className="eyebrow dark-eyebrow">YOUR WORKSPACE</p>
@@ -708,10 +747,12 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
     {profile && view === "profile" && <><div className="section-heading"><div><p className="eyebrow dark-eyebrow">MY ACCOUNT</p><h2>Profile</h2><p>Manage your personal and sign-in details.</p></div></div><ProfileCard token={token} profile={profile} onSaved={setProfile} /><PasswordCard token={token} forced={false} onChanged={onAccountChange} /></>}
     {profile && view === "attendance" && <><div className="section-heading"><div><p className="eyebrow dark-eyebrow">WORKDAY</p><h2>Attendance</h2></div></div><TimeClockCard token={token} /></>}
     {profile && view === "leave" && <LeaveManagementCard token={token} />}
+    {profile && view === "payroll" && <EmployeePayroll token={token} />}
     {profile && view === "contract" && <ContractsCard token={token} profile={profile} onAttentionChange={setContractAttention} />}
     {profile && view === "announcements" && <EmployeeAnnouncements announcements={announcements} onOpen={openAnnouncement} onClearAll={clearAnnouncements} />}
     {profile && view === "calendar" && <CompanyCalendar events={calendarEvents} onEventOpen={openCalendarEvent} onClearAll={clearCalendar} />}
 
     </section></main>
+    {signOutDialog}
   </>;
 }

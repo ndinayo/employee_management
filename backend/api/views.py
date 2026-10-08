@@ -1,5 +1,5 @@
 from calendar import monthrange
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from hashlib import sha256
 
@@ -16,7 +16,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import leave_management, onboarding
+from . import leave_management, onboarding, payroll_rules
 from .models import (AccountProfile, Employee, Contract, ContractTerminationRequest,
                      Attendance, LeaveBalance, LeaveRequest, Holiday, Announcement,
                      CalendarEvent, Salary, Payroll)
@@ -857,6 +857,20 @@ class CalendarEventViewSet(ManagerViewSet):
     serializer_class = CalendarEventSerializer
 
 
+def _money_field():
+    return serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True)
+
+
+PAYMENT_BREAKDOWN_FIELDS = {
+    "status": serializers.CharField(help_text="unpaid, draft or paid."),
+    "payroll": serializers.IntegerField(allow_null=True),
+    "paid_date": serializers.DateField(allow_null=True),
+    "monthly_salary": _money_field(), "advance_deductions": _money_field(), "asset_deductions": _money_field(),
+    "other_deductions": _money_field(), "total_deductions": _money_field(), "net_salary": _money_field(),
+    "lines": serializers.ListField(child=serializers.DictField()),
+}
+
+
 @extend_schema(tags=["Employer · Payroll"])
 @extend_schema_view(
     list=extend_schema(
@@ -908,8 +922,10 @@ class CalendarEventViewSet(ManagerViewSet):
         summary="Pay a month from the salary record",
         description="Creates a **paid** payroll record covering a whole calendar month, using "
                     "this salary as the base pay. Both fields are optional: `month` defaults to "
-                    "the current month and `paid_date` to today. Rejected if payroll already "
-                    "covers any part of that month, or if the employee is inactive.",
+                    "the current month and `paid_date` to today. The deductions shown by "
+                    "**payment_preview** are applied automatically and their balances updated. "
+                    "Rejected if payroll already covers any part of that month, or if the "
+                    "employee is inactive.",
         request=inline_serializer(
             name="SalaryMarkPaidRequest",
             fields={
@@ -923,10 +939,124 @@ class CalendarEventViewSet(ManagerViewSet):
         examples=[OpenApiExample("Pay October 2026", request_only=True,
                                  value={"month": "2026-10", "paid_date": "2026-10-28"})],
     ),
+    payment_preview=extend_schema(
+        summary="Preview a month's salary payment",
+        description="For an unpaid month, the automatic deductions **mark_paid** would apply: "
+                    "salary advance installments and authorized recoveries for resolved asset "
+                    "incidents, together capped by the business's deduction limit. Nothing is "
+                    "saved. For a month a payroll record already covers, the saved breakdown of "
+                    "that record is returned unchanged.",
+        parameters=[OpenApiParameter("month", str, description="The month as YYYY-MM. Defaults to this month.")],
+        responses=with_errors({200: inline_serializer(name="SalaryPaymentPreview", fields={
+            "employee": serializers.IntegerField(), "employee_name": serializers.CharField(),
+            "month": serializers.CharField(), "currency": serializers.CharField(),
+            **PAYMENT_BREAKDOWN_FIELDS,
+            "limit_percent": serializers.DecimalField(max_digits=5, decimal_places=2),
+            "warnings": serializers.ListField(child=serializers.CharField()),
+            "already_paid": serializers.BooleanField(),
+        })}, not_found=True),
+    ),
+    payment_history=extend_schema(
+        summary="Monthly payment history for a salary",
+        description="One row per month, newest first, from the salary's effective month (or the "
+                    "employee's earliest payroll record) to the current month. Paid and draft "
+                    "months carry their saved breakdown; unpaid months carry none.",
+        responses=with_errors({200: inline_serializer(name="SalaryPaymentHistory", fields={
+            "employee": serializers.IntegerField(), "employee_name": serializers.CharField(),
+            "currency": serializers.CharField(),
+            "months": inline_serializer(name="SalaryPaymentMonth", many=True, fields={
+                "month": serializers.CharField(), **PAYMENT_BREAKDOWN_FIELDS}),
+        })}, bad_request=False, not_found=True),
+    ),
 )
 class SalaryViewSet(ManagerViewSet):
     queryset = Salary.objects.select_related("employee").order_by("employee__last_name", "id")
     serializer_class = SalarySerializer
+
+    @staticmethod
+    def pay_period(month):
+        try:
+            year, index = int(str(month)[:4]), int(str(month)[5:7])
+            last_day = monthrange(year, index)[1]
+        except (IndexError, TypeError, ValueError):
+            raise serializers.ValidationError({"month": "Use a YYYY-MM month."})
+        return f"{year:04d}-{index:02d}-01", f"{year:04d}-{index:02d}-{last_day:02d}"
+
+    @staticmethod
+    def saved_payment(payroll):
+        """The breakdown stored with a payroll record. Never recalculated."""
+        calculation = getattr(payroll, "calculation", None)
+        zero = Decimal("0.00")
+        if calculation is not None and payroll_rules.calculation_is_current(payroll):
+            advance, asset = calculation.advance_deductions, calculation.asset_deductions
+            lines = [{"kind": line.kind, "name": line.name, "amount": str(line.amount)}
+                     for line in calculation.lines.all() if line.amount > 0]
+        else:
+            advance = asset = zero
+            lines = [{"kind": "other", "name": "Deductions", "amount": str(payroll.deductions)}] if payroll.deductions else []
+        return {
+            "status": payroll.status, "payroll": payroll.pk, "paid_date": payroll.paid_date,
+            "monthly_salary": str(payroll.gross_pay), "advance_deductions": str(advance),
+            "asset_deductions": str(asset), "other_deductions": str(payroll.deductions - advance - asset),
+            "total_deductions": str(payroll.deductions), "net_salary": str(payroll.net_pay), "lines": lines,
+        }
+
+    @action(detail=True, methods=["get"])
+    def payment_preview(self, request, pk=None):
+        salary = self.get_object()
+        month = request.query_params.get("month") or str(timezone.localdate())[:7]
+        period_start, period_end = self.pay_period(month)
+        policy = payroll_rules.payroll_policy(salary.employee.business_id)
+        body = {"employee": salary.employee_id, "employee_name": str(salary.employee), "month": month[:7],
+                "limit_percent": str(policy.advance_deduction_limit_percent)}
+        existing = (Payroll.objects.filter(employee=salary.employee, period_start__lte=period_end,
+                                           period_end__gte=period_start)
+                    .select_related("calculation").prefetch_related("calculation__lines").order_by("period_start").first())
+        if existing is not None:
+            return Response({**body, "currency": existing.currency, **self.saved_payment(existing),
+                             "warnings": [], "already_paid": existing.status == "paid"})
+        payroll = Payroll(employee=salary.employee, period_start=date.fromisoformat(period_start),
+                          period_end=date.fromisoformat(period_end), base_salary=salary.monthly_amount,
+                          allowances=Decimal("0"), deductions=Decimal("0"), currency=salary.currency)
+        result = payroll_rules.calculate_payroll(payroll, Decimal("0"))
+        return Response({
+            **body, "currency": salary.currency, "status": "unpaid", "payroll": None, "paid_date": None,
+            "monthly_salary": str(result["gross_pay"]), "asset_deductions": str(result["asset_deductions"]),
+            "advance_deductions": str(result["advance_deductions"]), "other_deductions": "0.00",
+            "total_deductions": str(result["total_deductions"]), "net_salary": str(result["net_pay"]),
+            "lines": [{"kind": line["kind"], "name": line["name"], "amount": str(line["amount"])}
+                      for line in result["lines"]],
+            "warnings": result["warnings"],
+            "already_paid": False,
+        })
+
+    @classmethod
+    def monthly_payments(cls, employee, since, paid_only=False):
+        """One row per month, newest first, from `since` to the latest of today and any payroll."""
+        payrolls = Payroll.objects.filter(employee=employee)
+        if paid_only:
+            payrolls = payrolls.filter(status="paid")
+        payrolls = list(payrolls.select_related("calculation").prefetch_related("calculation__lines")
+                        .order_by("period_start"))
+        first = min([since] + [row.period_start for row in payrolls]).replace(day=1)
+        cursor = max([timezone.localdate()] + [row.period_end for row in payrolls]).replace(day=1)
+        months = []
+        while cursor >= first and len(months) < 120:
+            end = cursor.replace(day=monthrange(cursor.year, cursor.month)[1])
+            covering = next((row for row in payrolls if row.period_start <= end and row.period_end >= cursor), None)
+            months.append({"month": f"{cursor:%Y-%m}", **(cls.saved_payment(covering) if covering else {
+                "status": "unpaid", "payroll": None, "paid_date": None, "monthly_salary": None,
+                "advance_deductions": None, "asset_deductions": None, "other_deductions": None,
+                "total_deductions": None, "net_salary": None, "lines": []})})
+            cursor = (cursor - timedelta(days=1)).replace(day=1)
+        return months
+
+    @action(detail=True, methods=["get"])
+    def payment_history(self, request, pk=None):
+        salary = self.get_object()
+        return Response({"employee": salary.employee_id, "employee_name": str(salary.employee),
+                         "currency": salary.currency,
+                         "months": self.monthly_payments(salary.employee, salary.effective_date)})
 
     @action(detail=True, methods=["post"])
     def mark_paid(self, request, pk=None):
@@ -935,27 +1065,33 @@ class SalaryViewSet(ManagerViewSet):
             raise serializers.ValidationError("This employee is inactive. Reactivate the profile before recording payment.")
         paid_date = request.data.get("paid_date") or timezone.localdate()
         month = request.data.get("month") or str(timezone.localdate())[:7]
-        try:
-            year, index = int(str(month)[:4]), int(str(month)[5:7])
-            last_day = monthrange(year, index)[1]
-        except (IndexError, TypeError, ValueError):
-            raise serializers.ValidationError({"month": "Use a YYYY-MM month."})
-        period_start, period_end = f"{year:04d}-{index:02d}-01", f"{year:04d}-{index:02d}-{last_day:02d}"
-        if Payroll.objects.filter(employee=salary.employee, period_start__lte=period_end, period_end__gte=period_start).exists():
-            raise serializers.ValidationError(
-                {"detail": f"{salary.employee} already has a payroll record covering {month}. Open Payroll & payslips to review it."}
-            )
-        payroll = PayrollSerializer(context=self.get_serializer_context(), data={
+        period_start, period_end = self.pay_period(month)
+        data = {
             "employee": salary.employee_id,
             "period_start": period_start, "period_end": period_end,
             "base_salary": salary.monthly_amount, "allowances": "0", "deductions": "0",
             "currency": salary.currency, "status": "paid", "paid_date": paid_date,
             "notes": f"Recorded from the salaries page using the monthly salary effective {salary.effective_date}.",
-        })
-        payroll.is_valid(raise_exception=True)
+        }
+        context = self.get_serializer_context()
         with transaction.atomic():
-            payroll.save()
-        return Response(payroll.data, status=status.HTTP_201_CREATED)
+            # Serialises concurrent payments for the same employee so a month is never paid twice.
+            Employee.objects.select_for_update().filter(pk=salary.employee_id).first()
+            if Payroll.objects.filter(employee=salary.employee, period_start__lte=period_end, period_end__gte=period_start).exists():
+                raise serializers.ValidationError(
+                    {"detail": f"{salary.employee} already has a payroll record covering {month}. Open Payroll to review it."}
+                )
+            checked = PayrollSerializer(context=context, data=data)
+            checked.is_valid(raise_exception=True)
+            draft = PayrollSerializer(context=context, data={**data, "status": "draft", "paid_date": None})
+            draft.is_valid(raise_exception=True)
+            draft.save()
+            payroll, _ = payroll_rules.apply_payroll_calculation(
+                draft.instance.pk, other_deductions=Decimal("0"),
+                calculated_by=request.user.get_full_name().strip() or request.user.username)
+            payroll.status, payroll.paid_date = "paid", checked.validated_data["paid_date"]
+            payroll.save(update_fields=["status", "paid_date"])
+        return Response(PayrollSerializer(payroll, context=context).data, status=status.HTTP_201_CREATED)
 
 
 @extend_schema(tags=["Employer · Payroll"])

@@ -4,6 +4,61 @@
 .dashboard-workspace .section-heading p { max-width: 650px; line-height: 1.6; }
 .dashboard-sidebar .sidebar-label { margin-top: 30px; }
 .dashboard-sidebar .sidebar-bottom { margin-top: auto; }
+
+/* --- Employer and super admin dashboards: top bar and tab navigation ------- */
+.topnav { position: sticky; top: 0; z-index: 30; background: var(--cream); border-bottom: 1px solid #e5ded2; box-shadow: 0 2px 12px #3b24220d; }
+.topnav-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px clamp(16px, 2vw, 28px); }
+.topnav-brand { color: var(--burgundy); font-size: 19px; }
+.topnav-brand .brand-mark { width: 28px; height: 28px; border-color: var(--burgundy); font-size: 14px; }
+.topnav-actions { display: flex; align-items: center; gap: 12px; }
+.topnav-menu { position: relative; }
+.topnav-account-button { display: flex; align-items: center; gap: 9px; padding: 4px 8px 4px 4px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--burgundy); font-size: 13px; font-weight: 700; }
+.topnav-account-button:hover, .topnav-account-button[aria-expanded="true"] { border-color: #e5ded2; background: #f6eee6; }
+.topnav-account-avatar { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #efdcd4; color: var(--burgundy); font-size: 13px; font-weight: 800; }
+.topnav-account-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topnav-caret { font-size: 10px; opacity: .7; }
+.topnav-account-card { display: grid; gap: 4px; padding: 8px 10px; }
+.topnav-account-card small { color: #8a7f74; font-size: 10px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; overflow-wrap: anywhere; }
+.topnav-account-card strong { color: var(--burgundy); font-size: 14px; overflow-wrap: anywhere; }
+.topnav-account-card span { color: #67655e; font-size: 12px; overflow-wrap: anywhere; }
+.topnav-signout { padding: 9px 16px; border: 0; border-radius: 6px; background: var(--coral); color: #291c1c; font-size: 13px; font-weight: 800; white-space: nowrap; }
+.topnav-signout:hover { background: #ff9279; }
+.topnav-toggle { display: none; padding: 8px 14px; border: 1px solid var(--burgundy); border-radius: 6px; background: transparent; color: var(--burgundy); font-size: 13px; font-weight: 800; }
+
+.topnav-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 clamp(16px, 2vw, 28px) 10px; }
+.topnav-tab { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--burgundy); font: inherit; font-size: 13px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.topnav-tab:hover, .topnav-tab-group[aria-expanded="true"] { background: #f6eee6; }
+.topnav-tab.selected { background: #efdcd4; color: var(--burgundy); }
+.topnav-tabs .attention-badge, .topnav-dropdown .attention-badge { min-width: 20px; height: 20px; padding: 0 6px; font-size: 11px; }
+
+.topnav-dropdown { position: absolute; top: calc(100% + 6px); left: 0; z-index: 5; display: grid; gap: 2px; min-width: 220px; padding: 6px; border: 1px solid #e5ded2; border-radius: 10px; background: var(--cream); box-shadow: 0 14px 34px #3b242226; }
+.topnav-dropdown-end { left: auto; right: 0; }
+.topnav-dropdown-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 6px; color: var(--burgundy); font-size: 13px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.topnav-dropdown-link:hover { background: #f6eee6; }
+.topnav-dropdown-link.selected { background: #efdcd4; }
+
+.dashboard-main.topnav-main { margin-left: 0; }
+html:has(.topnav) { scroll-padding-top: 120px; }
+
+.settings-stack { display: grid; gap: 20px; }
+.settings-stack > .panel { max-width: none; margin: 0; }
+.settings-card { padding: 24px; }
+.settings-card h3 { margin: 0 0 16px; color: var(--burgundy); font-size: 20px; }
+.settings-stack .account-panel h3 { margin: 0 0 6px; font-size: 20px; }
+
+@media (max-width: 900px) {
+  .topnav-toggle { display: inline-block; }
+  .topnav-account-name { display: none; }
+  .topnav-tabs { display: none; flex-direction: column; align-items: stretch; flex-wrap: nowrap; max-height: calc(100vh - 70px); overflow-y: auto; padding-bottom: 14px; }
+  .topnav-tabs.open { display: flex; }
+  .topnav-tab { justify-content: space-between; width: 100%; padding: 11px 12px; }
+  .topnav-tab-group .topnav-caret { margin-left: auto; }
+  .topnav-tabs .topnav-dropdown { position: static; min-width: 0; margin: 2px 0 4px 14px; box-shadow: none; }
+}
+@media (max-width: 480px) {
+  .topnav-actions { gap: 6px; }
+  .topnav-signout, .topnav-toggle { padding: 8px 10px; font-size: 12px; }
+}
 select, textarea { width: 100%; min-height: 43px; padding: 10px 12px; border: 1px solid #d5d2c9; border-radius: 5px; background: white; color: var(--ink); font: inherit; }
 textarea { resize: vertical; }
 button:disabled { opacity: .55; cursor: not-allowed; }
@@ -75,7 +130,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .status-badge { display: inline-block; padding: 5px 9px; border-radius: 20px; background: #e8e5de; font-size: 11px; white-space: nowrap; }
 .status-active, .status-approved, .status-present, .status-paid { background: #d8edda; color: #245b32; }
 .status-absent, .status-rejected, .status-ended { background: #ffe2da; color: #8b2e21; }
-.status-pending, .status-draft { background: #f5e9c8; color: #725516; }
+.deduction-note { display: block; }
+.status-pending, .status-draft, .status-unpaid { background: #f5e9c8; color: #725516; }
 .status-remote { background: #dce9f7; color: #2b5079; }
 .status-leave { background: #e7e0f4; color: #4a3670; }
 .status-unrecorded { background: #e8e5de; color: #5c584f; }
@@ -286,7 +342,8 @@ body:has(.form-modal[open]) { overflow: hidden; }
   body:has(.payslip-dialog[open]) .dashboard-workspace > :not(.payslip-dialog) { display: none; }
   body:has(.payslip-dialog[open]) .payslip-dialog { position: absolute; inset: 0; width: 100%; max-width: none; max-height: none; height: auto; overflow: visible; margin: 0; padding: 16px; border: 0; box-shadow: none; }
   body:has(.payslip-dialog[open]) .no-print { display: none; }
-  body:has(.payslip-dialog[open]) .dashboard-sidebar { display: none; }
+  body:has(.payslip-dialog[open]) .dashboard-sidebar,
+  body:has(.payslip-dialog[open]) .topnav { display: none; }
   body:has(.payslip-dialog[open]) .dashboard-main { margin: 0; }
   body:has(.payslip-dialog[open]) .dashboard-workspace { padding: 0; min-height: 0; }
   body:has(.payslip-dialog[open]) .payslip-dialog::backdrop { background: white; }
@@ -320,7 +377,7 @@ body:has(.form-modal[open]) { overflow: hidden; }
   font-size: 14px;
   line-height: 1;
 }
-.optional-fields[open] > summary::before { content: "2"; }
+.optional-fields[open] > summary::before { content: "Â‘2"; }
 .optional-fields[open] > summary { margin-bottom: 20px; }
 
 /* --- Platform owner's dashboard ------------------------------------------- */
@@ -346,26 +403,6 @@ body:has(.form-modal[open]) { overflow: hidden; }
 .platform-list strong { display: flex; align-items: center; gap: 8px; color: var(--burgundy); font-size: 14px; }
 .platform-list small { display: block; margin-top: 2px; color: var(--olive); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .platform-stamp { flex-shrink: 0; color: var(--olive); font-size: 12px; font-weight: 700; white-space: nowrap; }
-
-.growth-chart { width: 100%; overflow-x: auto; }
-.growth-chart svg { display: block; width: 100%; min-width: 420px; height: auto; }
-.growth-chart .grid-line { stroke: #e4e1d6; stroke-width: 1; }
-.growth-chart .axis-label { fill: #6d6f5e; font-size: 10px; font-weight: 700; }
-.growth-chart .growth-bar { fill: var(--burgundy); }
-.growth-chart .growth-bar:hover { fill: var(--coral); }
-
-.health-list { display: flex; flex-direction: column; gap: 2px; }
-.health-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 0; border-bottom: 1px solid #ece9df; }
-.health-row:last-child { border-bottom: 0; }
-.health-row strong { display: block; color: var(--burgundy); font-size: 14px; }
-.health-row small { display: block; margin-top: 2px; color: var(--olive); font-size: 12px; }
-.health-operational { background: #d8edda; color: #245b32; }
-.health-degraded, .health-not_configured { background: #f5e9c8; color: #725516; }
-.health-down { background: #ffe2da; color: #8b2e21; }
-.health-unknown { background: #e8e5de; color: #4a4a40; }
-.health-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; margin: 20px 0 0; padding-top: 18px; border-top: 1px solid #ece9df; }
-.health-meta dt { color: var(--olive); font-size: 11px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; }
-.health-meta dd { margin: 4px 0 0; color: var(--burgundy); font-size: 13px; overflow-wrap: anywhere; }
 
 /* --- Calendar: month / events tabs and the events list -------------------- */
 .calendar-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
@@ -397,3 +434,19 @@ body:has(.form-modal[open]) { overflow: hidden; }
    buttons grouped on the right instead of letting space-between split them. */
 .section-heading > .button:first-of-type { margin-left: auto; }
 .section-heading > .button + .button { margin-left: 10px; }
+
+/* Payroll extensions: asset misuse and salary advances. */
+.status-under_review, .status-scheduled, .status-disbursed { background: #dce9f7; color: #2b5079; }
+.status-resolved, .status-repaid { background: #d8edda; color: #245b32; }
+.status-reported, .status-not_applied { background: #ffe2da; color: #8b2e21; }
+.status-partially_repaid { background: #f5e9c8; color: #725516; }
+.status-closed { background: #e8e5de; color: #5c584f; }
+.payroll-tabs { flex-wrap: wrap; }
+.payroll-detail h4 { margin: 18px 0 8px; color: var(--burgundy); }
+.payroll-facts { margin-bottom: 8px; }
+.pay-breakdown .pay-breakdown-line { padding: 6px 0 6px 16px; color: #67655e; font-size: 13px; }
+.pay-breakdown .pay-breakdown-line dd { font-weight: 600; }
+@media (max-width: 600px) {
+  .payroll-tabs { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .payroll-tabs .calendar-tab { white-space: nowrap; }
+}

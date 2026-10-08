@@ -18,6 +18,13 @@ def photo_path(instance, filename):
     return f"photos/{uuid4().hex}{Path(filename).suffix.lower()}"
 
 
+def evidence_path(instance, filename):
+    return f"asset_evidence/{uuid4().hex}{Path(filename).suffix.lower()}"
+
+
+EVIDENCE_EXTENSIONS = ["pdf", "jpg", "jpeg", "png", "webp", "doc", "docx"]
+
+
 def money_field(**kwargs):
     return models.DecimalField(max_digits=12, decimal_places=2,
                                validators=[MinValueValidator(Decimal('0'))], **kwargs)
@@ -345,6 +352,165 @@ def discard_replaced_photo(sender, instance, **kwargs):
 @receiver(pre_save, sender=Contract)
 def discard_replaced_document(sender, instance, **kwargs):
     discard_replaced_file(sender, instance, "document")
+
+
+PAYMENT_METHODS = [("bank_transfer", "Bank transfer"), ("mobile_money", "Mobile money"), ("cash", "Cash")]
+RATE_VALIDATORS = [MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))]
+
+
+def rate_field(**kwargs):
+    return models.DecimalField(max_digits=5, decimal_places=2, validators=RATE_VALIDATORS, **kwargs)
+
+
+class PayrollPolicy(models.Model):
+    """Per-business salary advance settings."""
+
+    business = models.OneToOneField(Business, on_delete=models.CASCADE, null=True, blank=True,
+                                    related_name="payroll_policy")
+    # Share of the pay left after other deductions that salary advance
+    # installments and asset recoveries may take together in one payroll.
+    advance_deduction_limit_percent = rate_field(default=Decimal("33.33"))
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class PayrollCalculation(models.Model):
+    """The automatic deductions applied to one payroll record.
+
+    Amounts are a snapshot, so the payslip keeps showing what was deducted.
+    """
+
+    payroll = models.OneToOneField(Payroll, on_delete=models.CASCADE, related_name="calculation")
+    gross_pay = money_field()
+    advance_deductions = money_field()
+    asset_deductions = money_field(default=0)
+    other_deductions = money_field()
+    total_deductions = money_field()
+    net_pay = money_field()
+    warnings = models.JSONField(default=list, blank=True)
+    calculated_at = models.DateTimeField(auto_now=True)
+    calculated_by = models.CharField(max_length=200, blank=True)
+
+
+class PayrollDeductionLine(models.Model):
+    KINDS = [("advance", "Salary advance repayment"), ("asset", "Asset misuse recovery"), ("other", "Other deductions")]
+
+    calculation = models.ForeignKey(PayrollCalculation, on_delete=models.CASCADE, related_name="lines")
+    kind = models.CharField(max_length=20, choices=KINDS)
+    salary_advance = models.ForeignKey("SalaryAdvance", on_delete=models.SET_NULL, null=True, blank=True,
+                                       related_name="+")
+    # The ledger of payroll recoveries for an incident.
+    asset_incident = models.ForeignKey("AssetIncident", on_delete=models.SET_NULL, null=True, blank=True,
+                                       related_name="payroll_deductions")
+    name = models.CharField(max_length=150)
+    amount = money_field(default=0)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["position", "id"]
+
+
+class SalaryAdvance(models.Model):
+    """An interest-free advance repaid through monthly payroll installments.
+
+    The status is derived from disbursement and repayments rather than stored,
+    so it can never drift from the money actually recorded.
+    """
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="salary_advances")
+    amount = money_field()
+    currency = models.CharField(max_length=3, default="RWF")
+    issue_date = models.DateField()
+    reason = models.TextField()
+    installment_amount = money_field()
+    first_repayment_month = models.DateField()
+    notes = models.TextField(blank=True)
+    disbursed_on = models.DateField(null=True, blank=True)
+    disbursement_method = models.CharField(max_length=20, blank=True, choices=PAYMENT_METHODS)
+    disbursement_reference = models.CharField(max_length=120, blank=True)
+    approved_by = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-issue_date", "-id"]
+
+
+class SalaryAdvanceRequest(models.Model):
+    """An employee's request for an advance. Approval creates the SalaryAdvance."""
+
+    STATUSES = [("pending", "Pending"), ("approved", "Approved"), ("rejected", "Rejected")]
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="salary_advance_requests")
+    amount = money_field()
+    currency = models.CharField(max_length=3, default="RWF")
+    reason = models.TextField(blank=True)
+    status = models.CharField(max_length=10, choices=STATUSES, default="pending", db_index=True)
+    decision_notes = models.TextField(blank=True)
+    decided_by = models.CharField(max_length=200, blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    advance = models.OneToOneField(SalaryAdvance, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name="request")
+    requested_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-requested_at", "-id"]
+
+
+class AdvanceRepayment(models.Model):
+    """Money recovered against an advance. A payroll-sourced row counts as
+    repaid once its payroll is paid; until then it is a scheduled deduction."""
+
+    advance = models.ForeignKey(SalaryAdvance, on_delete=models.CASCADE, related_name="repayments")
+    payroll = models.ForeignKey(Payroll, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name="advance_repayments")
+    amount = money_field()
+    repaid_on = models.DateField()
+    source = models.CharField(max_length=10, choices=[("payroll", "Payroll deduction"), ("manual", "Direct repayment")])
+    reference = models.CharField(max_length=120, blank=True)
+    notes = models.TextField(blank=True)
+    recorded_by = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["repaid_on", "id"]
+        constraints = [models.UniqueConstraint(fields=["advance", "payroll"], condition=models.Q(payroll__isnull=False),
+                                               name="one_advance_deduction_per_payroll")]
+
+
+class AssetIncident(models.Model):
+    TYPES = [("damaged", "Damaged"), ("lost", "Lost"), ("misused", "Misused")]
+    STATUSES = [("reported", "Reported"), ("under_review", "Under review"),
+                ("resolved", "Resolved"), ("closed", "Closed")]
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="asset_incidents")
+    asset_name = models.CharField(max_length=200)
+    asset_tag = models.CharField(max_length=100, blank=True)
+    incident_type = models.CharField(max_length=20, choices=TYPES, default="damaged")
+    incident_date = models.DateField()
+    description = models.TextField()
+    estimated_loss = money_field(default=0)
+    currency = models.CharField(max_length=3, default="RWF")
+    evidence = models.FileField(upload_to=evidence_path, blank=True,
+                                validators=[FileExtensionValidator(EVIDENCE_EXTENSIONS)])
+    status = models.CharField(max_length=20, choices=STATUSES, default="reported")
+    investigation_findings = models.TextField(blank=True)
+    employee_response = models.TextField(blank=True)
+    resolution = models.TextField(blank=True)
+    # Deducted through payroll only once the incident is resolved or closed.
+    recovery_amount = money_field(default=0)
+    recovery_authorization = models.TextField(blank=True)
+    reported_by = models.CharField(max_length=200, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-incident_date", "-id"]
+
+
+@receiver(pre_save, sender=AssetIncident)
+def discard_replaced_incident_evidence(sender, instance, **kwargs):
+    discard_replaced_file(sender, instance, "evidence")
 
 
 class PlatformMessage(models.Model):

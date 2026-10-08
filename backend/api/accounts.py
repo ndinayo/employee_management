@@ -945,8 +945,10 @@ class MyAttendanceView(APIView):
             if action == "check_in":
                 if attendance and attendance.check_in_at:
                     raise serializers.ValidationError(f"You have already checked in for the {shift} shift.")
+                # Matches GET: a shift left open before yesterday no longer blocks a new one.
                 active = Attendance.objects.select_for_update().filter(
-                    employee=employee, check_in_at__isnull=False, check_out_at__isnull=True,
+                    employee=employee, date__gte=date - timedelta(days=1),
+                    check_in_at__isnull=False, check_out_at__isnull=True,
                 ).first()
                 if active:
                     raise serializers.ValidationError(f"Check out of the {active.shift} shift before starting another shift.")
