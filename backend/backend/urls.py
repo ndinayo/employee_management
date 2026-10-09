@@ -9,6 +9,7 @@ from api.accounts import (AccountView, EmailSettingsView, MyContractSignView, My
                           MyCalendarView, MyLeaveDetailView, MyLeaveView, MyPhotoView, MyProfileView,
                           PasswordChangeView, PasswordResetConfirmView,
                           PasswordResetRequestView, SignupView, TokenView)
+from api.access_control import MyAccessHistoryView, MyRoomsView
 from api.admin_activity import AdminActivityView, AdminCompanyActivityView, AdminEmployeeActivityView
 from api.admin_records import AdminRecordsView
 from api.dashboard import AdminHealthView, AdminOverviewView
@@ -61,6 +62,8 @@ urlpatterns = [
     path("api/me/salary-advance-requests/", MySalaryAdvanceRequestsView.as_view(), name="my-salary-advance-requests"),
     path("api/me/salary-advance-requests/<int:pk>/", MySalaryAdvanceRequestDetailView.as_view(),
          name="my-salary-advance-request"),
+    path("api/me/rooms/", MyRoomsView.as_view(), name="my-rooms"),
+    path("api/me/access-history/", MyAccessHistoryView.as_view(), name="my-access-history"),
     path("api/me/contracts/", MyContractsView.as_view(), name="my-contracts"),
     path("api/me/contracts/<int:pk>/sign/", MyContractSignView.as_view(), name="my-contract-sign"),
     path("api/me/contracts/<int:pk>/termination/", MyContractTerminationView.as_view(), name="my-contract-termination"),

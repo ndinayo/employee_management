@@ -4,7 +4,7 @@ Each resource is listed exactly as its employer sees it, across all companies or
 filtered to one company or employee. The administrator can read but never change
 these records; changes stay with each employer.
 """
-from django.db.models import Q
+from django.db.models import Count, Q
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers
@@ -12,8 +12,10 @@ from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import (Announcement, CalendarEvent, Employee, Holiday, SalaryAdvanceRequest,
-                     WorkplaceLocation)
+from .access_control import (RoomAccessAttemptSerializer, RoomAccessGrantSerializer, RoomPermissionChangeSerializer,
+                             RoomSerializer)
+from .models import (Announcement, CalendarEvent, Employee, Holiday, Room, RoomAccessAttempt, RoomAccessGrant,
+                     RoomPermissionChange, SalaryAdvanceRequest, WorkplaceLocation)
 from .payroll_serializers import AdvanceRequestSerializer
 from .payroll_views import AssetIncidentViewSet, SalaryAdvanceViewSet
 from .permissions import IsAdmin
@@ -51,8 +53,15 @@ SOURCES = {
     "calendar-events": from_viewset(CalendarEventViewSet),
     "holidays": from_viewset(HolidayViewSet),
     "workplace-locations": (WorkplaceLocation.objects.select_related("business"), WorkplaceLocationRecordSerializer),
+    "rooms": (Room.objects.select_related("business").annotate(grant_count=Count("grants")), RoomSerializer),
+    "room-access-grants": (RoomAccessGrant.objects.select_related("room", "employee"), RoomAccessGrantSerializer),
+    "room-permission-changes": (RoomPermissionChange.objects.all(), RoomPermissionChangeSerializer),
+    "room-access-history": (RoomAccessAttempt.objects.select_related("business"), RoomAccessAttemptSerializer),
 }
-BUSINESS_OWNED = (Employee, Holiday, Announcement, CalendarEvent, WorkplaceLocation)
+BUSINESS_OWNED = (Employee, Holiday, Announcement, CalendarEvent, WorkplaceLocation, Room, RoomPermissionChange,
+                  RoomAccessAttempt)
+# Business-owned records that also name one employee.
+EMPLOYEE_NAMED = (RoomPermissionChange, RoomAccessAttempt)
 
 
 @extend_schema(
@@ -86,7 +95,7 @@ class AdminRecordsView(APIView):
                 queryset = queryset.filter(pk=employee)
             elif queryset.model is CalendarEvent:
                 queryset = queryset.filter(Q(invited_employees=employee) | Q(all_employees=True, business__employee=employee))
-            elif owned:
+            elif owned and queryset.model not in EMPLOYEE_NAMED:
                 queryset = queryset.filter(business__employee=employee)
             else:
                 queryset = queryset.filter(employee_id=employee)

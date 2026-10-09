@@ -157,6 +157,7 @@ returns **404**.
         {"name": "Employee workspace", "description": "Employee only, and only after the employer approves the signed contract."},
         {"name": "Employer · Salary advances", "description": "Employer only. Interest-free advances repaid through payroll installments."},
         {"name": "Employer · Asset misuse", "description": "Employer only. Damaged, lost or misused asset incidents. Nothing is deducted from salary."},
+        {"name": "Access control", "description": "Rooms, door permissions and the access history of the employer's own business. Unlocking is open to the room's employer and to granted employees, and goes through the door hardware integration."},
     ],
     # Several models call a field "status", so name those enums explicitly.
     "ENUM_NAME_OVERRIDES": {

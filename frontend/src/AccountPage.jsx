@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router";
 import { DigitalContractDocument, SignaturePad } from "./DigitalContract";
 import CompanyCalendar, { EmployeeAnnouncements } from "./CompanyCalendar";
 import EmployeePayroll from "./EmployeePayroll";
+import AccessControl from "./AccessControl";
 import ModalDialog from "./components/ModalDialog";
 import ChangePasswordDialog from "./components/ChangePasswordDialog";
 import DashboardTopNav from "./components/DashboardTopNav";
@@ -495,6 +496,7 @@ function ContractsCard({ token, profile, onSigned, onAttentionChange }) {
 
 function employeeViewFromLocation(location) {
   const parts = location.pathname.split("/").filter(Boolean);
+  if (parts[1]?.toLowerCase() === "access-control") return "access-control";
   const pathView = parts.length > 1 ? parts.at(-1).toLowerCase() : "";
   const requested = pathView || location.hash.slice(1).toLowerCase();
   if (["contracts", "contract"].includes(requested)) return "contract";
@@ -522,6 +524,7 @@ function EmployeeTopNav({ account, token, onLogout, linked, forced, contractOnly
       link("contract", "Contract", contractAttention),
       link("announcements", "Announcements", announcementAttention),
       link("calendar", "Calendar", calendarAttention),
+      link("access-control", "Access Control"),
     ] : []),
   ];
   const full = linked && !forced && !contractOnly;
@@ -714,6 +717,7 @@ export default function AccountPage({ account, token, onAccountChange, onLogout 
     {profile && view === "contract" && <ContractsCard token={token} profile={profile} onAttentionChange={setContractAttention} />}
     {profile && view === "announcements" && <EmployeeAnnouncements announcements={announcements} onOpen={openAnnouncement} onClearAll={clearAnnouncements} />}
     {profile && view === "calendar" && <CompanyCalendar events={calendarEvents} onEventOpen={openCalendarEvent} onClearAll={clearCalendar} />}
+    {profile && view === "access-control" && <AccessControl token={token} role="employee" />}
 
     </section></main>
     {signOutDialog}

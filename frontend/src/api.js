@@ -444,6 +444,56 @@ export function fetchAssetSummary(token) {
   return request("/api/asset-incidents/summary/", { token });
 }
 
+// Smart room access control. Unlocking always goes through the server, which
+// checks the permission and asks the door hardware integration to open the door.
+export function fetchAccessRecords(token, resource, query = {}) {
+  return request(`/api/access-control/${resource}/?${new URLSearchParams(query)}`, { token });
+}
+
+export function saveRoom(token, body, id) {
+  return request(`/api/access-control/rooms/${id ? `${id}/` : ""}`, { method: id ? "PATCH" : "POST", token, body });
+}
+
+export function deleteRoom(token, id) {
+  return request(`/api/access-control/rooms/${id}/`, { method: "DELETE", token });
+}
+
+export function grantRoomAccess(token, room, email) {
+  return request("/api/access-control/grants/", { method: "POST", token, body: { room, email } });
+}
+
+export function grantRoomAccessBulk(token, employees, rooms) {
+  return request("/api/access-control/grants/bulk/", { method: "POST", token, body: { employees, rooms } });
+}
+
+export function revokeRoomAccess(token, id) {
+  return request(`/api/access-control/grants/${id}/`, { method: "DELETE", token });
+}
+
+export function unlockRoom(token, id, body) {
+  return request(`/api/access-control/rooms/${id}/unlock/`, { method: "POST", token, body });
+}
+
+export function startDoorSimulator(token, room) {
+  return request(`/api/access-control/simulator/${room}/`, { method: "POST", token });
+}
+
+export function fetchDoorSimulator(token, room) {
+  return request(`/api/access-control/simulator/${room}/`, { token });
+}
+
+export function stopDoorSimulator(token, room) {
+  return request(`/api/access-control/simulator/${room}/`, { method: "DELETE", token });
+}
+
+export function fetchMyRooms(token) {
+  return request("/api/me/rooms/", { token });
+}
+
+export function fetchMyAccessHistory(token) {
+  return request("/api/me/access-history/", { token });
+}
+
 export function downloadEvidence(token, resource, id) {
   return request(`/api/${resource}/${id}/evidence/`, { token, download: true });
 }

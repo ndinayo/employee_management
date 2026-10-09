@@ -9,6 +9,7 @@ import {
 import Conversation from "./Conversation";
 import DashboardTopNav from "./DashboardTopNav";
 import PlatformOverview from "./PlatformOverview";
+import AccessControl from "../AccessControl";
 import ModalDialog from "./ModalDialog";
 import { useConfirm } from "./ConfirmDialog";
 import { label, modules, money } from "../managerConfig";
@@ -696,6 +697,7 @@ export default function AdminDashboard({ token, account, onLogout, onAuthError }
         { label: "Employers", to: "/dashboard/employers", badge: dormantEmployers, badgeLabel: `${dormantEmployers} employers have never signed in` },
         { label: "Employees", to: "/dashboard/employees" },
         { label: "Messages", to: "/dashboard/messages", badge: unreadMessages, badgeLabel: `${unreadMessages} unread messages` },
+        { label: "Access Control", to: "/dashboard/access-control" },
       ]}
       identity={{ eyebrow: "SUPER ADMIN", name: account?.display_name || account?.username || "Administrator", role: account?.role_label || "Administrator", detail: account?.email }}
       navLabel="Admin navigation"
@@ -715,6 +717,7 @@ export default function AdminDashboard({ token, account, onLogout, onAuthError }
         <Route path="messages/:business" element={<MessagesPage token={token} onAuthError={onAuthError} />} />
         <Route path="employers" element={<EmployersPage token={token} onAuthError={onAuthError} />} />
         <Route path="employees" element={<EmployeesPage token={token} onAuthError={onAuthError} />} />
+        <Route path="access-control/*" element={<AccessControl token={token} role="admin" onAuthError={onAuthError} />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </section></main>

@@ -580,3 +580,128 @@ class PlatformMessage(models.Model):
 
     def __str__(self):
         return f"{'Admin' if self.from_admin else self.business.name} message {self.pk}"
+
+
+# --- Smart room access control ------------------------------------------------
+
+class Room(models.Model):
+    """A room with a controlled door, owned by one business."""
+
+    business = models.ForeignKey(Business, on_delete=models.CASCADE, related_name="rooms")
+    name = models.CharField(max_length=100)
+    building = models.CharField(max_length=100)
+    floor = models.CharField(max_length=30)
+    # The identifier of the door controller fitted to this room.
+    door_identifier = models.CharField(max_length=100)
+    created_by = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["building", "floor", "name", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["business", "door_identifier"], name="unique_business_door_identifier"),
+            models.UniqueConstraint(fields=["business", "building", "floor", "name"], name="unique_business_room"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.building}, {self.floor})"
+
+
+class RoomAccessGrant(models.Model):
+    """Permission for one employee to unlock one room. Revoking deletes it."""
+
+    room = models.ForeignKey(Room, on_delete=models.CASCADE, related_name="grants")
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="room_grants")
+    granted_by = models.CharField(max_length=200, blank=True)
+    granted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["room__name", "employee__last_name", "id"]
+        constraints = [models.UniqueConstraint(fields=["room", "employee"], name="unique_room_access_grant")]
+
+
+class RoomPermissionChange(models.Model):
+    """Every grant and revocation, kept after the grant itself is gone."""
+
+    ACTIONS = [("granted", "Access granted"), ("revoked", "Access revoked")]
+
+    business = models.ForeignKey(Business, on_delete=models.CASCADE, related_name="room_permission_changes")
+    room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    room_name = models.CharField(max_length=100)
+    employee = models.ForeignKey(Employee, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    employee_name = models.CharField(max_length=201)
+    employee_email = models.EmailField()
+    change = models.CharField(max_length=10, choices=ACTIONS)
+    changed_by = models.CharField(max_length=200, blank=True)
+    note = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+
+class RoomAccessAttempt(models.Model):
+    """One request to unlock a door, whatever its outcome.
+
+    Names are copied at the time of the attempt so the history still reads
+    correctly after a room, an employee or an account is removed.
+    """
+
+    # "range" is no longer accepted; it stays for attempts already recorded with it.
+    METHODS = [("nfc", "NFC"), ("bluetooth", "Bluetooth"), ("range", "Phone in range (simulator)"),
+               ("door_code", "Door code (simulator)")]
+    RESULTS = [("granted", "Granted"), ("denied", "Denied")]
+    REASONS = [
+        ("not_member", "Not part of this business"),
+        ("admin_no_policy", "No door authorization policy for administrators"),
+        ("inactive", "Employee profile is inactive"),
+        ("not_approved", "Contract not approved yet"),
+        ("password_change_required", "Temporary password not replaced yet"),
+        ("no_permission", "No access granted to this room"),
+        ("hardware_not_configured", "Door hardware integration not configured"),
+        ("proximity_failed", "Proximity not verified"),
+        ("too_far", "Too far from the door"),
+    ]
+    UNLOCK_STATUSES = [
+        ("confirmed", "Door confirmed it unlocked"),
+        ("unconfirmed", "Unlock sent, no confirmation from the door"),
+        ("failed", "Door controller did not respond"),
+    ]
+
+    business = models.ForeignKey(Business, on_delete=models.CASCADE, related_name="room_access_attempts")
+    room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True, blank=True, related_name="access_attempts")
+    room_name = models.CharField(max_length=100)
+    building = models.CharField(max_length=100, blank=True)
+    floor = models.CharField(max_length=30, blank=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                             related_name="room_access_attempts")
+    employee = models.ForeignKey(Employee, on_delete=models.SET_NULL, null=True, blank=True,
+                                 related_name="room_access_attempts")
+    user_name = models.CharField(max_length=200)
+    user_email = models.EmailField(blank=True)
+    user_role = models.CharField(max_length=10)
+    access_method = models.CharField(max_length=10, choices=METHODS)
+    result = models.CharField(max_length=10, choices=RESULTS)
+    denial_reason = models.CharField(max_length=30, blank=True, choices=REASONS)
+    # Only set once a door controller was actually told to unlock.
+    unlock_status = models.CharField(max_length=12, blank=True, choices=UNLOCK_STATUSES)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["business", "created_at"])]
+
+
+class SimulatedDoor(models.Model):
+    """An employer's browser standing in for a room's door while no hardware is installed.
+
+    It only counts while the simulator page keeps checking in (`last_seen_at`).
+    """
+
+    room = models.OneToOneField(Room, on_delete=models.CASCADE, related_name="simulated_door")
+    secret = models.CharField(max_length=64)
+    started_by = models.CharField(max_length=200, blank=True)
+    started_at = models.DateTimeField()
+    last_seen_at = models.DateTimeField()
+    unlocked_until = models.DateTimeField(null=True, blank=True)

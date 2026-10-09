@@ -11,6 +11,7 @@ import { useConfirm } from "./components/ConfirmDialog";
 import { Link, Navigate, Route, Routes } from "react-router";
 import { approveContractWorker, calculatePayroll, decideContractTermination, deleteRecord, downloadContract, fetchCompanyThread, fetchEmailSettings, fetchEmployeePhoto, fetchRecords, fetchReports, fetchSalaryPaymentHistory, fetchSalaryPaymentPreview, initiateContractTermination, markCompanyThreadRead, markSalaryPaid, requestNewContractSignature, resendContractSignatureEmail, saveEmailSettings, saveRecord, sendCompanyMessage, sendContractForSignature } from "./api";
 import { AssetMisusePage, SalaryAdvancesPage } from "./PayrollExtras";
+import AccessControl from "./AccessControl";
 import Conversation from "./components/Conversation";
 import DashboardTopNav from "./components/DashboardTopNav";
 import { PasswordCard } from "./AccountPage";
@@ -1034,6 +1035,7 @@ const managerNav = [
   ] },
   { label: "Communication", items: [{ key: "announcements" }, { key: "messages", label: "Messages" }, { key: "google-meet", label: "Google Meet" }] },
   { key: "reports", label: "Reports" },
+  { key: "access-control", label: "Access Control" },
   { key: "settings", label: "Settings" },
 ];
 
@@ -1145,6 +1147,7 @@ export default function ManagerDashboard({ token, account, onLogout, onAuthError
         <Route path="google-meet" element={<GoogleMeetPage token={token} employees={data.employees || []} onChange={updateRecords} />} />
         <Route path="settings" element={<SettingsPage token={token} account={account} onAccountChange={onAccountChange} onAuthError={onAuthError} />} />
         <Route path="asset-misuse" element={<AssetMisusePage token={token} employees={data.employees || []} onAuthError={onAuthError} />} />
+        <Route path="access-control/*" element={<AccessControl token={token} role="employer" employees={data.employees || []} onAuthError={onAuthError} />} />
         <Route path="salary-advances" element={<SalaryAdvancesPage token={token} employees={data.employees || []} onAuthError={onAuthError} onRequestsChange={setPendingAdvanceRequests} />} />
         {Object.keys(modules).map((resource) => <Route key={resource} path={resource} element={modules[resource].custom
           ? <ManagerCalendarPage token={token} events={data[resource] || []} onChange={updateRecords} onAuthError={onAuthError} />
